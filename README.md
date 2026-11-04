@@ -15,6 +15,17 @@ npm test
 npm run format
 ```
 
+### Backend
+
+The app talks to the dialer backend's agent mobile routes (`/v1/api/agent/mobile`). Copy `.env.example` to `.env.local` (git ignores it) and set `EXPO_PUBLIC_API_URL`:
+
+- Backend running on your own PC: `http://<your PC's Wi-Fi IPv4>:4000`. Not `localhost`, because the app runs on the phone. The phone must be on the same Wi-Fi, and the address changes when the PC joins another network.
+- A shared backend (UAT / production): its public URL.
+
+Restart with `npx expo start -c` after changing it. With no URL the app runs on its in-app demo data.
+
+The webphone (WebRTC) and the call audio routing need the development build (`eas build --profile development`); they can't run in Expo Go.
+
 ### Flow
 
 1. **Login**: login ID and password, with a SIP (webphone) or Mobile (phone-line) tab. There is no OTP step. Against the mock backend any login ID of 3+ characters and a 4+ character password works; the ID is prefilled in demo mode.

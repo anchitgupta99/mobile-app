@@ -16,6 +16,7 @@ import { checkBeforeDial } from './compliance';
 import { runNetworkCheck, type NetworkVerdict } from './networkCheck';
 import { voipAdapter } from './voip';
 import { nativeCall } from './nativeCall';
+import { setCallAudioRoute, startCallAudio, stopCallAudio } from './sip/audioRoute';
 import { setSipCallHandlers, type IncomingSipCall } from './sip/sipPhone';
 
 export type DialSource = 'keypad' | 'contact' | 'history' | 'task';
@@ -795,9 +796,18 @@ const offIncoming = realtime.on('call.incoming', ({ pop, mode, fallback }) => {
 const offSession = useSession.subscribe((s, prev) => {
   if (prev.token && !s.token) useCall.getState().reset();
 });
+// The webphone's audio follows the call: call mode (earpiece, proximity sensor) from the moment there is
+// a call, the route the agent picks on the call screen, and normal audio again once it's gone
+const offAudio = useCall.subscribe((s, prev) => {
+  if (!USE_BACKEND) return;
+  if (s.call && !prev.call) startCallAudio(s.call.route);
+  else if (!s.call && prev.call) stopCallAudio();
+  else if (s.call && prev.call && s.call.route !== prev.call.route) setCallAudioRoute(s.call.route);
+});
 registry.__claritelCallStoreUnsubscribe = () => {
   offIncoming();
   offSession();
+  offAudio();
 };
 
 // Every call the server puts through to the webphone goes through takeSipCall: the agent's own manual
