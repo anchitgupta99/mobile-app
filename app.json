@@ -1,0 +1,95 @@
+{
+  "expo": {
+    "name": "Claritel Agent",
+    "slug": "claritel-agent",
+    "scheme": "claritel",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "ai.claritel.agent",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "Claritel uses the microphone for calls with customers.",
+        "NSFaceIDUsageDescription": "Unlock Claritel with Face ID."
+      },
+      "bitcode": false
+    },
+    "android": {
+      "package": "ai.claritel.agent",
+      "adaptiveIcon": {
+        "backgroundColor": "#E6E6FF",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "permissions": [
+        "RECORD_AUDIO",
+        "POST_NOTIFICATIONS",
+        "USE_BIOMETRIC",
+        "android.permission.USE_BIOMETRIC",
+        "android.permission.USE_FINGERPRINT",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+        "android.permission.ACCESS_NETWORK_STATE",
+        "android.permission.CAMERA",
+        "android.permission.INTERNET",
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.WAKE_LOCK",
+        "android.permission.BLUETOOTH"
+      ],
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "bundler": "metro",
+      "favicon": "./assets/favicon.png",
+      "output": "single"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-font",
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Unlock Claritel with Face ID."
+        }
+      ],
+      "expo-audio",
+      "expo-asset",
+      "expo-notifications",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 160,
+          "resizeMode": "contain",
+          "backgroundColor": "#E6E6FF",
+          "dark": {
+            "image": "./assets/splash-icon.png",
+            "backgroundColor": "#15132B"
+          }
+        }
+      ],
+      "expo-secure-store",
+      [
+        "@config-plugins/react-native-webrtc",
+        {
+          "microphonePermission": "Claritel uses the microphone for calls with customers."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "309d4013-9809-431e-a2ae-a5dac6bbf737"
+      }
+    },
+    "owner": "faizan-claritel"
+  }
+}
