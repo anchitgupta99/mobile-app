@@ -1,5 +1,5 @@
 import { io, type Socket } from 'socket.io-client';
-import { API_URL } from './http';
+import { SOCKET_URL } from './http';
 
 /**
  * The agent's live connection to the backend, the same socket.io connection the web agent app opens
@@ -15,7 +15,16 @@ type SocketHandlers = {
   /** The server ended this session: logged in elsewhere, logged out by an admin, or the session expired */
   forcedLogout: (message: string) => void;
   sessionUpdate: (data: SessionUpdate) => void;
+  /** The server refused the login token (expired or revoked) */
+  sessionExpired: () => void;
+  /** An accept/reject inbound call is ringing this agent (the web's inbound:incoming): its ring time */
+  inboundIncoming: (data: InboundRing) => void;
+  /** That ring is over (the web's inbound:ended): timeout, customer_gone, preempted, connected, … */
+  inboundEnded: (data: InboundEnded) => void;
 };
+
+export type InboundRing = { agentCallUuid?: string; ringTimeoutSec?: number };
+export type InboundEnded = { agentCallUuid?: string; reason?: string };
 
 let socket: Socket | null = null;
 let heartbeat: ReturnType<typeof setInterval> | null = null;
@@ -36,9 +45,9 @@ function sendHeartbeat() {
 
 export function connectAgentSocket(token: string, handlers: SocketHandlers) {
   disconnectAgentSocket();
-  if (!API_URL) return;
+  if (!SOCKET_URL) return;
   // Unlike the web's 3 tries, keeps reconnecting: a phone drops and regains signal all day
-  const s = io(API_URL, {
+  const s = io(SOCKET_URL, {
     path: '/ws',
     auth: { token },
     transports: ['websocket'],
@@ -52,7 +61,14 @@ export function connectAgentSocket(token: string, handlers: SocketHandlers) {
     stopHeartbeat();
     heartbeat = setInterval(sendHeartbeat, 10000);
   });
-  s.on('connect_error', (e) => log('connect error', e.message));
+  s.on('connect_error', (e) => {
+    log('connect error', e.message);
+    // The server refused the login itself (expired or revoked): sign out, as a 401 does
+    if (e.message === 'INVALID_AUTH_TOKEN') {
+      disconnectAgentSocket();
+      handlers.sessionExpired();
+    }
+  });
   s.on('disconnect', (reason) => {
     log('disconnected', reason);
     stopHeartbeat();
@@ -68,8 +84,17 @@ export function connectAgentSocket(token: string, handlers: SocketHandlers) {
     log('session update', data?.status, data?.activeBreak?.break_type_id ?? '');
     handlers.sessionUpdate(data ?? {});
   });
+  // Accept/reject inbound calls, as the web (socket/appSocket.ts): the ring time, and why a ring ended
+  s.on('inbound:incoming', (data: InboundRing) => {
+    log('inbound:incoming', data);
+    handlers.inboundIncoming(data ?? {});
+  });
+  s.on('inbound:ended', (data: InboundEnded) => {
+    log('inbound:ended', data);
+    handlers.inboundEnded(data ?? {});
+  });
   // Calls reach the app as SIP calls to its webphone (see telephony/sip); these are logged for debugging
-  for (const event of ['call-event', 'call_status_update', 'call:answered', 'inbound:incoming', 'inbound:ended']) {
+  for (const event of ['call-event', 'call_status_update', 'call:answered']) {
     s.on(event, (data) => log(event, data));
   }
 }

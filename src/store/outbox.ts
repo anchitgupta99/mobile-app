@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { api, ApiError } from '@/api/client';
+import { USE_BACKEND } from '@/api/http';
 import { isOnline } from '@/api/network';
 import type { AgentStatus, CallRecord, Contact, DispositionPayload, Task } from '@/domain/types';
 import { uid } from '@/domain/format';
@@ -38,6 +39,8 @@ type OutboxState = {
   syncing: boolean;
   lastFlushAt: string | null;
   lastError: string | null;
+  /** Backend: the last change the server turned down, for the toast (useSyncFailureToast), as the web shows it */
+  failure: { at: number; title?: string; message: string } | null;
   enqueue: (item: NewItem) => void;
   flush: () => Promise<void>;
   /** Put a parked item back in the queue and flush */
@@ -64,6 +67,16 @@ async function send(item: OutboxItem) {
   }
 }
 
+/**
+ * Backend: what the web shows when the same change fails. A callback reschedule: the web's fallback (its own text is
+ * the browser's "Request failed with status code …"). A status / break change and the rest: nothing, as on the web
+ * (marking a callback done has no web equivalent).
+ */
+function webFailureText(item: OutboxItem): string | null {
+  if (item.kind === 'task' && !item.payload.done) return 'Failed to reschedule. Please try again.';
+  return null;
+}
+
 /** Ids of records that still have a queued local change; a server copy must not overwrite them */
 export function pendingIds(items: OutboxItem[]) {
   const ids = new Set<string>();
@@ -84,8 +97,18 @@ export const useOutbox = create<OutboxState>()(
         syncing: false,
         lastFlushAt: null,
         lastError: null,
+        failure: null,
         enqueue: (item) => {
           const full = { ...item, key: uid('idem'), attempts: 0, createdAt: new Date().toISOString() } as OutboxItem;
+          if (USE_BACKEND) {
+            // As the web, which has no queue: each change goes to the server once, straight away, and a failure
+            // is shown right then (or not at all, where the web shows nothing). No retries, so nothing is sent twice.
+            void send(full).catch(() => {
+              const message = webFailureText(full);
+              if (message) set({ failure: { at: Date.now(), message } });
+            });
+            return;
+          }
           set((s) => ({
             items: full.kind === 'status' ? [...s.items.filter((i) => i.kind !== 'status'), full] : [...s.items, full],
           }));
@@ -107,7 +130,7 @@ export const useOutbox = create<OutboxState>()(
         },
         discard: (key) => set((s) => ({ items: s.items.filter((i) => i.key !== key) })),
         dropKind: (kind) => set((s) => ({ items: s.items.filter((i) => i.kind !== kind) })),
-        clear: () => set({ items: [], lastError: null }),
+        clear: () => set({ items: [], lastError: null, failure: null }),
       };
 
       async function runFlush() {

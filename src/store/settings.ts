@@ -42,7 +42,8 @@ export const useSettings = create<SettingsState>()(
       idleLockMinutes: 5,
       revealNumbers: false,
       uiSounds: true,
-      haptics: true,
+      // Off until the agent turns it on in Settings → Haptics
+      haptics: false,
       autoCall: true,
       micDevice: 'Default - Microphone Array (Realtek(R) Audio)',
       speakerDevice: 'Default - Speakers (Realtek(R) Audio)',
@@ -51,6 +52,15 @@ export const useSettings = create<SettingsState>()(
       swipeHintSeen: false,
       set: (patch) => set(patch),
     }),
-    { name: 'claritel.settings', storage },
+    {
+      name: 'claritel.settings',
+      storage,
+      // v1: haptics became off by default; installs saved before then had it on without choosing it
+      version: 1,
+      migrate: (saved, from) => {
+        const s = (saved ?? {}) as Partial<SettingsState>;
+        return (from < 1 ? { ...s, haptics: false } : s) as SettingsState;
+      },
+    },
   ),
 );

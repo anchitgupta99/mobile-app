@@ -3,11 +3,18 @@ import { useEffect } from 'react';
 import { notify } from '@/components/feedback';
 import { useOutbox } from '@/store/outbox';
 
-/** Saves are local-first, so a server rejection only shows up later. Tell the agent the moment one happens. */
+/**
+ * Tells the agent the moment a change is turned down. Backend: each change is sent once, straight away, and its
+ * failure reads as the web's. Demo: saves are local-first, so a rejection only shows up later, with Review.
+ */
 export function useSyncFailureToast() {
   useEffect(
     () =>
       useOutbox.subscribe((s, prev) => {
+        if (s.failure && s.failure !== prev.failure) {
+          notify(s.failure.message, 'error', undefined, s.failure.title ? { title: s.failure.title } : undefined);
+          return;
+        }
         const seen = new Set(prev.items.filter((i) => i.error).map((i) => i.key));
         const fresh = s.items.filter((i) => i.error && !seen.has(i.key));
         if (!fresh.length) return;

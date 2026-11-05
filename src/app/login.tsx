@@ -48,6 +48,21 @@ export default function Login() {
     try {
       await login(loginId, password, mode);
     } catch (e) {
+      // As the web's login (pages/auth/Login.tsx): the password was right but has expired, so the reset opens
+      // on "Create new password" with the server's reset token and rules (without a token, on the email step)
+      if (e instanceof ApiError && e.reason === 'PASSWORD_EXPIRED') {
+        const body = (e.server?.body ?? {}) as { resetToken?: unknown; rules?: unknown };
+        router.push({
+          pathname: '/forgot-password',
+          params: {
+            identifier: loginId.trim(),
+            expired: '1',
+            ...(typeof body.resetToken === 'string' && { resetToken: body.resetToken }),
+            ...(typeof body.rules === 'object' && body.rules !== null ? { rules: JSON.stringify(body.rules) } : {}),
+          },
+        });
+        return;
+      }
       setError(
         e instanceof ApiError && e.code === 'offline'
           ? 'No connection. Logging in needs the internet once.'

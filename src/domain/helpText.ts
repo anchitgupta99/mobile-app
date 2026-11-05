@@ -30,7 +30,7 @@ export const helpText = {
 
   acw: {
     title: 'After-call work (ACW)',
-    text: 'Time to finish wrap-up for this call. When it runs out the timer turns red and counts over time; your supervisor can see the overrun. You still need to submit a disposition.',
+    text: 'Time to finish wrap-up for this call. When it runs out, the disposition is submitted automatically as it stands.',
   },
   requiredFields: 'A disposition and fields marked * are required. After you submit, this call can’t be edited.',
 

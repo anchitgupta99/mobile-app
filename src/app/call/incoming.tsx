@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { ScrollView, View } from 'react-native';
+import { ActivityIndicator, ScrollView, View } from 'react-native';
 import Animated, {
   cancelAnimation,
   Easing,
@@ -31,6 +31,8 @@ function RoundAction({
   onPress,
   breathe,
   haptic = true,
+  disabled,
+  busy,
 }: {
   icon: IconName;
   label: string;
@@ -39,6 +41,9 @@ function RoundAction({
   onPress: () => void;
   breathe?: boolean;
   haptic?: boolean;
+  disabled?: boolean;
+  /** A spinner in place of the icon while its request is with the server */
+  busy?: boolean;
 }) {
   const { c } = useTheme();
   const reduced = useReducedMotion();
@@ -58,14 +63,24 @@ function RoundAction({
         <PressableScale
           accessibilityRole="button"
           accessibilityLabel={label}
+          accessibilityState={{ disabled: !!disabled, busy: !!busy }}
           scaleTo={0.94}
+          disabled={disabled}
           onPress={() => {
             if (haptic) tap('medium');
             onPress();
           }}
-          style={{ width: 76, height: 76, borderRadius: 38, backgroundColor: bg, alignItems: 'center', justifyContent: 'center' }}
+          style={{
+            width: 76,
+            height: 76,
+            borderRadius: 38,
+            backgroundColor: bg,
+            alignItems: 'center',
+            justifyContent: 'center',
+            opacity: disabled && !busy ? 0.6 : 1,
+          }}
         >
-          <Icon name={icon} size={34} color={fg} />
+          {busy ? <ActivityIndicator color={fg} /> : <Icon name={icon} size={34} color={fg} />}
         </PressableScale>
       </Animated.View>
       <T v="label" color={c.onCallScreen}>
@@ -167,7 +182,7 @@ export default function Incoming() {
       </ScrollView>
 
       <View style={{ flexDirection: 'row', justifyContent: 'space-around', paddingHorizontal: 32, paddingTop: 20 }}>
-        <RoundAction icon="call-end" label="Decline" bg={c.danger} fg={c.onDanger} onPress={decline} />
+        <RoundAction icon="call-end" label="Decline" bg={c.danger} fg={c.onDanger} onPress={decline} disabled={!!call.accepting} />
         <RoundAction
           icon="call"
           label={call.mode === 'bridge' ? 'Answered' : 'Answer'}
@@ -175,6 +190,8 @@ export default function Incoming() {
           fg={c.onCall}
           breathe
           haptic={false}
+          disabled={!!call.accepting}
+          busy={!!call.accepting}
           onPress={() => {
             if (useCall.getState().call?.state === 'ringing') feedback('call.answered');
             void answer();

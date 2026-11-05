@@ -579,7 +579,8 @@ export function ConsultView({ onMinimise }: { onMinimise: () => void }) {
 
   const targetStatus = failed ? (
     <T v="label" color={c.errorFg}>
-      {failLabel[consult.state]}
+      {/* The web's failed transfer / conference reads "Call Failed" over the reason */}
+      {USE_BACKEND ? 'Call Failed' : failLabel[consult.state]}
     </T>
   ) : targetTime ? (
     <T v="label" color={c.signalOk} nums>
@@ -637,9 +638,14 @@ export function ConsultView({ onMinimise }: { onMinimise: () => void }) {
       {/* Backend: the server rings them and connects them itself the moment they answer, as on the web */}
       {USE_BACKEND ? (
         <View style={{ gap: 8, paddingHorizontal: 4 }}>
+          {failed && (
+            <T v="h3" color={c.errorFg}>
+              Call Failed
+            </T>
+          )}
           <T v="body" color={c.onCallScreen}>
             {failed
-              ? (consult.error ?? `${consult.target.name} couldn’t be reached.`)
+              ? (consult.error ?? 'Failed. Please try again.')
               : transfer
                 ? `Ringing ${consult.target.name}. ${customer.split(' ')[0]} goes to them as soon as they answer, and this call moves to wrap-up.`
                 : `Ringing ${consult.target.name}. They join the call as soon as they answer.`}

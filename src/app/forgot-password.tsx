@@ -1,47 +1,111 @@
-import { router } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
-import { KeyboardAvoidingView, Pressable, ScrollView, TextInput, View } from 'react-native';
+import { router, useLocalSearchParams } from 'expo-router';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { KeyboardAvoidingView, Linking, Pressable, ScrollView, TextInput, View } from 'react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
-import { ApiError, api } from '@/api/client';
+import { ApiError, api, type PasswordRules } from '@/api/client';
+import { webText } from '@/api/errors';
+import { TIMED_OUT } from '@/api/http';
 import { keyboardBehavior } from '@/components/keyboard';
 import { PageHeader } from '@/components/PageHeader';
 import { Button, Field, Icon, IconButton, T } from '@/components/ui';
-import { useTheme } from '@/theme';
+import { font, useTheme } from '@/theme';
 import { duration } from '@/theme/motion';
 
-type Step = 'email' | 'code' | 'password' | 'done';
+/**
+ * Forgot password, step for step and word for word the web's (pages/auth/ForgotPassword.tsx): email or username,
+ * a 4-digit code from the registered email, then the new password against the server's rules. Opened from the
+ * login screen, or straight on "Create new password" when the login said the password has expired.
+ */
+type Step = 'email' | 'code' | 'password' | 'success' | 'inactive';
 
-const RESEND_SECONDS = 30;
+const OTP_LENGTH = 4;
+const REDIRECT_DELAY_MS = 3000;
+const SUPPORT_EMAIL = 'product@claritel.ai';
 
-const stepCopy: Record<Step, { title: string; hint: (email: string) => string }> = {
-  email: {
-    title: 'Reset your password',
-    hint: () => 'Enter the email linked to your Claritel account. We will send you a confirmation code.',
-  },
-  code: { title: 'Check your email', hint: (email) => `We sent a 6-digit code to ${email}. It expires in 10 minutes.` },
-  password: { title: 'Set a new password', hint: () => 'Use at least 8 characters. You will log in with it on web and mobile.' },
-  done: { title: 'Password updated', hint: () => 'Your password has been reset. Log in with your new password.' },
-};
+// Used only if the server's answer has no rules (backend passwordPolicy.ts values), as on the web
+const FALLBACK_RULES: PasswordRules = { minLength: 8, uppercase: true, lowercase: true, number: true, symbol: true, historyDepth: 5 };
 
-function message(e: unknown) {
-  if (e instanceof ApiError && e.code === 'offline') return 'No connection. Try again when you are online.';
-  return e instanceof Error ? e.message : 'Something went wrong';
+type ChecklistItem = { label: string; met: boolean };
+
+// The web's checklist (the same as its Settings › Change password), built from the server's rules
+function buildChecklist(rules: PasswordRules, newPassword: string, confirmPassword: string, reusedPassword: string) {
+  const ruleItems: ChecklistItem[] = [
+    { label: `At least ${rules.minLength} characters`, met: newPassword.length >= rules.minLength },
+    ...(rules.uppercase ? [{ label: 'An uppercase letter', met: /[A-Z]/.test(newPassword) }] : []),
+    ...(rules.lowercase ? [{ label: 'A lowercase letter', met: /[a-z]/.test(newPassword) }] : []),
+    ...(rules.number ? [{ label: 'A number', met: /[0-9]/.test(newPassword) }] : []),
+    ...(rules.symbol ? [{ label: 'A symbol', met: /[^A-Za-z0-9]/.test(newPassword) }] : []),
+  ];
+  return {
+    checklist: [
+      ...ruleItems,
+      // Only the server can check this: met until it rejects the password
+      ...(rules.historyDepth > 0
+        ? [{ label: `Not one of your last ${rules.historyDepth} passwords`, met: newPassword.length > 0 && newPassword !== reusedPassword }]
+        : []),
+      { label: 'Both passwords match', met: confirmPassword.length > 0 && confirmPassword === newPassword },
+    ],
+    rulesMet: ruleItems.every((i) => i.met),
+  };
+}
+
+// The web's extractApiError: a timeout, no answer at all, else the server's error, its message, the fallback
+function errorText(e: unknown, fallback: string) {
+  if (e instanceof ApiError && e.reason === TIMED_OUT) return 'The request timed out. Please try again.';
+  if (!(e instanceof ApiError) || !e.server) return 'Unable to reach the server. Please check your connection.';
+  return webText(e, ['error', 'message'], fallback);
+}
+
+function serverBody(e: unknown): { code?: string; error?: string; resendIn?: unknown } {
+  const body = e instanceof ApiError ? e.server?.body : undefined;
+  return body && typeof body === 'object' ? (body as { code?: string; error?: string; resendIn?: unknown }) : {};
+}
+
+function parseRules(raw?: string): PasswordRules | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as PasswordRules;
+  } catch {
+    return null;
+  }
 }
 
 export default function ForgotPassword() {
   const { c } = useTheme();
-  const [step, setStep] = useState<Step>('email');
-  const [email, setEmail] = useState('');
-  const [code, setCode] = useState('');
-  const [password, setPassword] = useState('');
-  const [confirm, setConfirm] = useState('');
+  const params = useLocalSearchParams<{ identifier?: string; expired?: string; resetToken?: string; rules?: string }>();
+  const expired = params.expired === '1';
+  // From sign-in with a right but expired password: straight to "Create new password", no email code
+  const fromExpiredLogin = expired && !!params.resetToken;
+
+  const [step, setStep] = useState<Step>(fromExpiredLogin ? 'password' : 'email');
+  const [identifier, setIdentifier] = useState(params.identifier ?? '');
+  const [maskedEmail, setMaskedEmail] = useState('');
+  const [otp, setOtp] = useState('');
+  const [resetToken, setResetToken] = useState(fromExpiredLogin ? (params.resetToken ?? '') : '');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [rules, setRules] = useState<PasswordRules>(() => parseRules(params.rules) ?? FALLBACK_RULES);
+  // The password the server turned down as one of the last N
+  const [reusedPassword, setReusedPassword] = useState('');
+  const [confirmTouched, setConfirmTouched] = useState(false);
   const [show, setShow] = useState(false);
-  const [requestId, setRequestId] = useState<string | null>(null);
-  const [resetToken, setResetToken] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [emailError, setEmailError] = useState('');
+  const [codeError, setCodeError] = useState('');
+  const [codeInfo, setCodeInfo] = useState('');
+  const [passwordError, setPasswordError] = useState('');
+  const [submitConfirmError, setSubmitConfirmError] = useState('');
+  const [inactiveMessage, setInactiveMessage] = useState('');
   const [resendIn, setResendIn] = useState(0);
+  const otpRef = useRef<TextInput>(null);
   const confirmRef = useRef<TextInput>(null);
+
+  const { checklist, rulesMet: passwordValid } = useMemo(
+    () => buildChecklist(rules, newPassword, confirmPassword, reusedPassword),
+    [rules, newPassword, confirmPassword, reusedPassword],
+  );
+  // The web shows "Passwords do not match" once the confirm field has been left with a different password
+  const confirmError = submitConfirmError || (confirmTouched && confirmPassword && confirmPassword !== newPassword ? 'Passwords do not match' : '');
 
   useEffect(() => {
     if (resendIn <= 0) return;
@@ -49,147 +113,284 @@ export default function ForgotPassword() {
     return () => clearTimeout(t);
   }, [resendIn]);
 
-  const attempt = async (fn: () => Promise<void>) => {
-    setError(null);
-    setBusy(true);
+  useEffect(() => {
+    if (step !== 'success') return;
+    const t = setTimeout(() => router.replace('/login'), REDIRECT_DELAY_MS);
+    return () => clearTimeout(t);
+  }, [step]);
+
+  const showInactive = (message?: string) => {
+    setInactiveMessage(message || 'This account is marked inactive. Please contact your Admin.');
+    setStep('inactive');
+  };
+
+  const sendCode = async (isResend: boolean) => {
+    const trimmed = identifier.trim();
+    if (!trimmed) {
+      setEmailError('Please enter your email or username.');
+      return;
+    }
+    setLoading(true);
+    setEmailError('');
+    setCodeError('');
+    setCodeInfo('');
     try {
-      await fn();
+      const data = await api.auth.requestPasswordReset(trimmed);
+      setMaskedEmail(data.maskedEmail);
+      setResendIn(Number(data.resendIn) || 0);
+      setOtp('');
+      setStep('code');
+      if (isResend) {
+        setCodeInfo('A new code has been sent to your email.');
+        otpRef.current?.focus();
+      }
     } catch (e) {
-      setError(message(e));
+      const data = serverBody(e);
+      if (data.code === 'USER_INACTIVE') return showInactive(data.error);
+      const retry = Number(data.resendIn);
+      if (retry > 0) setResendIn(retry);
+      const msg = errorText(e, 'Could not send the code. Please try again.');
+      if (isResend) setCodeError(msg);
+      else setEmailError(msg);
     } finally {
-      setBusy(false);
+      setLoading(false);
     }
   };
 
-  const sendCode = () =>
-    attempt(async () => {
-      const res = await api.auth.requestPasswordReset(email.trim());
-      setRequestId(res.requestId);
-      setCode('');
-      setResendIn(RESEND_SECONDS);
-      setStep('code');
-    });
-
-  const verifyCode = () =>
-    attempt(async () => {
-      if (!requestId) return;
-      const res = await api.auth.verifyResetCode(requestId, code);
-      setResetToken(res.resetToken);
+  const verifyCode = async () => {
+    if (otp.length !== OTP_LENGTH) {
+      setCodeError(`Please enter the ${OTP_LENGTH}-digit code.`);
+      return;
+    }
+    setLoading(true);
+    setCodeError('');
+    setCodeInfo('');
+    try {
+      const data = await api.auth.verifyResetCode(identifier.trim(), otp);
+      setResetToken(data.resetToken);
+      setRules(data.rules ?? FALLBACK_RULES);
       setStep('password');
-    });
+    } catch (e) {
+      setCodeError(errorText(e, 'Verification failed. Please try again.'));
+      setOtp('');
+      otpRef.current?.focus();
+    } finally {
+      setLoading(false);
+    }
+  };
 
-  const savePassword = () =>
-    attempt(async () => {
-      if (!resetToken) return;
-      if (password.length < 8) throw new Error('Use at least 8 characters');
-      if (password !== confirm) throw new Error('Passwords do not match');
-      await api.auth.resetPassword(resetToken, password);
-      setStep('done');
-    });
+  const savePassword = async () => {
+    setConfirmTouched(true);
+    if (!passwordValid) {
+      setPasswordError('Password does not meet all the requirements');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setSubmitConfirmError('Passwords do not match');
+      return;
+    }
+    setLoading(true);
+    setPasswordError('');
+    try {
+      await api.auth.resetPassword(resetToken, newPassword, confirmPassword);
+      setNewPassword('');
+      setConfirmPassword('');
+      setResetToken('');
+      setStep('success');
+    } catch (e) {
+      const data = serverBody(e);
+      if (data.code === 'USER_INACTIVE') return showInactive(data.error);
+      if (data.code === 'RESET_EXPIRED') {
+        setResetToken('');
+        setNewPassword('');
+        setConfirmPassword('');
+        setConfirmTouched(false);
+        setEmailError('Your session expired. Please request a new code.');
+        setStep('email');
+        return;
+      }
+      if (data.code === 'PASSWORD_REUSED') setReusedPassword(newPassword);
+      setPasswordError(errorText(e, 'Could not update password. Please try again.'));
+    } finally {
+      setLoading(false);
+    }
+  };
 
-  const copy = stepCopy[step];
+  const heading = (title: string, lines: string[]) => (
+    <Animated.View key={step} entering={FadeIn.duration(duration.base)} style={{ gap: 4 }}>
+      <T v="h2" accessibilityRole="header">
+        {title}
+      </T>
+      <T v="caption">{lines.join('\n')}</T>
+    </Animated.View>
+  );
+
+  const contactLine = (
+    <T v="caption" color={c.ink2} style={{ textAlign: 'center' }}>
+      Do not have your credentials? Contact:{' '}
+      <T v="caption" color={c.purple} accessibilityRole="link" onPress={() => void Linking.openURL(`mailto:${SUPPORT_EMAIL}`)}>
+        {SUPPORT_EMAIL}
+      </T>
+    </T>
+  );
 
   return (
     <KeyboardAvoidingView behavior={keyboardBehavior} style={{ flex: 1, backgroundColor: c.surface }}>
       <PageHeader title="Forgot password" />
       <ScrollView contentContainerStyle={{ flexGrow: 1 }} keyboardShouldPersistTaps="handled">
         <View style={{ padding: 24, gap: 18, flex: 1, width: '100%', maxWidth: 480, alignSelf: 'center' }}>
-          <Animated.View key={step} entering={FadeIn.duration(duration.base)} style={{ gap: 4 }}>
-            {step === 'done' && <Icon name="check-circle" size={40} color={c.purple} />}
-            <T v="h2" accessibilityRole="header">
-              {copy.title}
-            </T>
-            <T v="caption">{copy.hint(email.trim())}</T>
-          </Animated.View>
-
           {step === 'email' && (
             <>
+              {heading(
+                'Reset your password',
+                expired
+                  ? ['Your password has expired. Please enter your email or username.', 'We will send a code to your registered email']
+                  : ['Please enter your email or username.', 'We will send a code to your registered email'],
+              )}
               <Field
-                label="Email"
-                icon="mail-outline"
-                value={email}
-                onChangeText={setEmail}
+                label="Email / Username"
+                icon="person-outline"
+                placeholder="Your email or username"
+                value={identifier}
+                onChangeText={(v) => {
+                  setIdentifier(v);
+                  if (emailError) setEmailError('');
+                }}
                 autoCapitalize="none"
                 autoCorrect={false}
-                autoComplete="email"
-                textContentType="emailAddress"
-                keyboardType="email-address"
+                autoComplete="username"
+                textContentType="username"
                 returnKeyType="send"
                 autoFocus
-                onSubmitEditing={() => void sendCode()}
-                error={error}
+                onSubmitEditing={() => void sendCode(false)}
+                error={emailError || null}
               />
-              <Button label="Send code" size="lg" full loading={busy} disabled={!email.trim() || busy} onPress={() => void sendCode()} />
+              <Button label={loading ? 'Sending...' : 'Send'} size="lg" full loading={loading} disabled={loading} onPress={() => void sendCode(false)} />
+              {contactLine}
             </>
           )}
 
           {step === 'code' && (
             <>
-              <Field
-                label="Confirmation code"
-                icon="pin"
-                value={code}
-                onChangeText={(v) => setCode(v.replace(/\D/g, '').slice(0, 6))}
-                keyboardType="number-pad"
-                autoComplete="one-time-code"
-                textContentType="oneTimeCode"
-                maxLength={6}
-                returnKeyType="done"
-                autoFocus
-                onSubmitEditing={() => void verifyCode()}
-                error={error}
-              />
-              <Button
-                label="Verify code"
-                size="lg"
-                full
-                loading={busy}
-                disabled={code.length !== 6 || busy}
-                onPress={() => void verifyCode()}
-              />
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+              {heading('Code verification', [
+                `We sent you a code to ${maskedEmail || 'your registered email'}.`,
+                'Please enter that code in the field below',
+              ])}
+              <View>
                 <Pressable
-                  accessibilityRole="button"
-                  onPress={() => {
-                    setError(null);
-                    setStep('email');
+                  accessibilityRole="none"
+                  onPress={() => otpRef.current?.focus()}
+                  style={{ flexDirection: 'row', gap: 12 }}
+                >
+                  {Array.from({ length: OTP_LENGTH }, (_, i) => {
+                    const digit = otp[i] ?? '';
+                    return (
+                      <View
+                        key={i}
+                        style={{
+                          flex: 1,
+                          height: 56,
+                          borderRadius: 12,
+                          borderWidth: 2,
+                          borderColor: codeError ? c.errorFg : digit ? c.purple : c.line,
+                          backgroundColor: c.surface,
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}
+                      >
+                        <T v="h2" nums>
+                          {digit}
+                        </T>
+                      </View>
+                    );
+                  })}
+                </Pressable>
+                {/* One field behind the boxes, so the phone can fill the code in and paste works */}
+                <TextInput
+                  ref={otpRef}
+                  value={otp}
+                  onChangeText={(v) => {
+                    setOtp(v.replace(/\D/g, '').slice(0, OTP_LENGTH));
+                    if (codeError) setCodeError('');
                   }}
-                  hitSlop={12}
-                  style={{ minHeight: 32, justifyContent: 'center' }}
-                >
-                  <T v="label" color={c.purple}>
-                    Change email
-                  </T>
-                </Pressable>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityState={{ disabled: resendIn > 0 || busy }}
-                  disabled={resendIn > 0 || busy}
-                  onPress={() => void sendCode()}
-                  hitSlop={12}
-                  style={{ minHeight: 32, justifyContent: 'center' }}
-                >
-                  <T v="label" color={resendIn > 0 ? c.ink3 : c.purple} nums>
-                    {resendIn > 0 ? `Resend code in ${resendIn}s` : 'Resend code'}
-                  </T>
-                </Pressable>
+                  keyboardType="number-pad"
+                  autoComplete="one-time-code"
+                  textContentType="oneTimeCode"
+                  maxLength={OTP_LENGTH}
+                  autoFocus
+                  caretHidden
+                  accessibilityLabel={`${OTP_LENGTH}-digit code`}
+                  onSubmitEditing={() => void verifyCode()}
+                  style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, opacity: 0 }}
+                />
               </View>
+              {!!codeError && (
+                <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center', justifyContent: 'center' }}>
+                  <Icon name="warning-amber" size={16} color={c.errorFg} />
+                  <T v="caption" color={c.errorFg}>
+                    {codeError}
+                  </T>
+                </View>
+              )}
+              {!!codeInfo && !codeError && (
+                <T v="caption" color={c.successFg} style={{ textAlign: 'center' }}>
+                  {codeInfo}
+                </T>
+              )}
+              <View style={{ alignItems: 'center', gap: 6 }}>
+                <T v="caption" color={c.ink3}>
+                  {"Didn't get the email?"}
+                </T>
+                {resendIn > 0 ? (
+                  <T v="body" color={c.ink2} nums>
+                    Request a new code in{' '}
+                    <T v="h3" color={c.purple} nums>
+                      {resendIn}
+                    </T>{' '}
+                    s
+                  </T>
+                ) : (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityState={{ disabled: loading }}
+                    disabled={loading}
+                    onPress={() => void sendCode(true)}
+                    hitSlop={12}
+                    style={{ minHeight: 32, justifyContent: 'center' }}
+                  >
+                    <T v="label" color={c.purple} style={{ textDecorationLine: 'underline' }}>
+                      Request a new code
+                    </T>
+                  </Pressable>
+                )}
+              </View>
+              <Button label={loading ? 'Verifying...' : 'Next'} size="lg" full loading={loading} disabled={loading} onPress={() => void verifyCode()} />
             </>
           )}
 
           {step === 'password' && (
             <>
+              {heading(
+                'Create new password',
+                fromExpiredLogin && resetToken ? ['Your password has expired. Please choose a new one.'] : ['Please enter new password.'],
+              )}
               <Field
-                label="New password"
+                label="New Password"
                 icon="lock-outline"
-                value={password}
-                onChangeText={setPassword}
+                placeholder="Your new password"
+                value={newPassword}
+                onChangeText={(v) => {
+                  setNewPassword(v);
+                  if (passwordError) setPasswordError('');
+                  if (submitConfirmError) setSubmitConfirmError('');
+                }}
                 secureTextEntry={!show}
                 autoComplete="new-password"
                 textContentType="newPassword"
                 returnKeyType="next"
                 autoFocus
                 onSubmitEditing={() => confirmRef.current?.focus()}
+                error={passwordError || null}
                 right={
                   <IconButton
                     icon={show ? 'visibility-off' : 'visibility'}
@@ -202,30 +403,66 @@ export default function ForgotPassword() {
               />
               <Field
                 ref={confirmRef}
-                label="Confirm new password"
+                label="Confirm new Password"
                 icon="lock-outline"
-                value={confirm}
-                onChangeText={setConfirm}
+                placeholder="Confirm your new password"
+                value={confirmPassword}
+                onChangeText={(v) => {
+                  setConfirmPassword(v);
+                  if (submitConfirmError) setSubmitConfirmError('');
+                }}
+                onBlur={() => setConfirmTouched(true)}
                 secureTextEntry={!show}
                 autoComplete="new-password"
                 textContentType="newPassword"
                 returnKeyType="go"
                 onSubmitEditing={() => void savePassword()}
-                error={error}
+                error={confirmError || null}
               />
-              <Button
-                label="Reset password"
-                size="lg"
-                full
-                loading={busy}
-                disabled={password.length < 8 || !confirm || busy}
-                onPress={() => void savePassword()}
-              />
+              <View style={{ borderWidth: 1, borderColor: c.line, borderRadius: 12, paddingHorizontal: 16, paddingVertical: 12, gap: 6 }}>
+                <T v="label" style={{ fontFamily: font.semibold }}>
+                  Your password needs
+                </T>
+                {checklist.map((item) => (
+                  <View key={item.label} style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <Icon
+                      name={item.met ? 'check-circle' : 'radio-button-unchecked'}
+                      size={16}
+                      color={item.met ? c.successFg : c.ink3}
+                    />
+                    <T v="caption" color={item.met ? c.ink : c.ink2} accessibilityLabel={`${item.label}, ${item.met ? 'met' : 'not met yet'}`}>
+                      {item.label}
+                    </T>
+                  </View>
+                ))}
+              </View>
+              <Button label={loading ? 'Saving...' : 'Next'} size="lg" full loading={loading} disabled={loading} onPress={() => void savePassword()} />
             </>
           )}
 
-          {step === 'done' && (
-            <Button label="Back to Log In" size="lg" full onPress={() => (router.canGoBack() ? router.back() : router.replace('/login'))} />
+          {step === 'success' && (
+            <Animated.View entering={FadeIn.duration(duration.base)} style={{ alignItems: 'center', gap: 12, paddingVertical: 24 }}>
+              <Icon name="check-circle" size={64} color={c.successFg} />
+              <T v="h2" style={{ textAlign: 'center' }} accessibilityRole="header">
+                Your new password was successfully created
+              </T>
+              <T v="body" color={c.ink2} style={{ textAlign: 'center' }}>
+                {"Please wait...\nIt won't take long."}
+              </T>
+            </Animated.View>
+          )}
+
+          {step === 'inactive' && (
+            <Animated.View entering={FadeIn.duration(duration.base)} style={{ alignItems: 'center', gap: 12, paddingVertical: 24 }}>
+              <Icon name="warning-amber" size={64} color={c.errorFg} />
+              <T v="h2" style={{ textAlign: 'center' }} accessibilityRole="header">
+                User is inactive.
+              </T>
+              <Button label="Back to Login" size="lg" full style={{ marginTop: 24 }} onPress={() => router.replace('/login')} />
+              <T v="body" color={c.ink2} style={{ textAlign: 'center' }}>
+                {inactiveMessage}
+              </T>
+            </Animated.View>
           )}
         </View>
       </ScrollView>

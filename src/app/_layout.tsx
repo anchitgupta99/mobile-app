@@ -20,6 +20,7 @@ import { realtime } from '@/api/realtime';
 import { preloadSounds } from '@/feedback';
 import { useCallFeedback } from '@/feedback/useCallFeedback';
 import { useAgentSocket } from '@/hooks/useAgentSocket';
+import { useWebphoneWatch } from '@/hooks/useWebphoneWatch';
 import { useSyncFailureToast } from '@/hooks/useSyncFailureToast';
 import { useData } from '@/store/data';
 import { useOutbox } from '@/store/outbox';
@@ -53,6 +54,7 @@ function useAppLifecycle() {
   const quality = useNetwork((s) => s.quality);
   useAgentSocket();
   useSipRegistration();
+  useWebphoneWatch();
 
   useEffect(() => {
     if (quality !== 'offline' && token) {

@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import { api } from '@/api/client';
+import { ApiError, webText } from '@/api/errors';
 import { USE_BACKEND } from '@/api/http';
+import { notify } from '@/components/feedback';
 import { realtime } from '@/api/realtime';
 import { sampleNetwork } from '@/api/network';
 import type { CallDirection, CallMode, CallRecord, CallState, NetworkSample, ScreenPop, Task } from '@/domain/types';
@@ -18,6 +20,7 @@ import { voipAdapter } from './voip';
 import { nativeCall } from './nativeCall';
 import { setCallAudioRoute, startCallAudio, stopCallAudio } from './sip/audioRoute';
 import { setSipCallHandlers, type IncomingSipCall } from './sip/sipPhone';
+import type { InboundEnded, InboundRing } from '@/api/socket';
 
 export type DialSource = 'keypad' | 'contact' | 'history' | 'task';
 
@@ -36,6 +39,16 @@ export type ActiveCall = {
   endedAt: number | null;
   muted: boolean;
   held: boolean;
+  /** Backend: a hold / resume is on its way to the server; the button waits for it, as on the web */
+  holdPending?: boolean;
+  /** Backend: the server's INVITE for this dialed call reached the webphone, which answered it */
+  onWebphone?: boolean;
+  /** Backend: the manual-call request is still with the server, so End waits (as the web's dial button does) */
+  dialPending?: boolean;
+  /** Backend: the last hold / resume failed; the Hold button reads "Failed" as on the web */
+  holdFailed?: boolean;
+  /** Backend: Accept on an accept/reject inbound call is with the server; it keeps ringing until it's accepted */
+  accepting?: boolean;
   route: AudioRoute;
   dtmf: string;
   quality: NetworkSample | null;
@@ -85,7 +98,8 @@ export type Consult = {
 
 export type Conference = { startedAt: number; legs: Leg[] };
 
-export type DialResult = { ok: true } | { ok: false; title: string; message: string };
+/** `toast`: shown as a toast like the web's "Call Failed" rather than a dialog */
+export type DialResult = { ok: true } | { ok: false; title: string; message: string; toast?: boolean };
 
 type CallStore = {
   call: ActiveCall | null;
@@ -120,6 +134,10 @@ type CallStore = {
   end: () => void;
   /** The webphone's call ended from the other side: the customer hung up, didn't answer, or the server cleared it */
   remoteEnded: () => void;
+  /** Socket inbound:incoming: the ring time of an accept/reject inbound call */
+  inboundIncoming: (data: InboundRing) => void;
+  /** Socket inbound:ended: the server ended that ring; tells the agent why, as the web's "Inbound call" toast */
+  inboundEnded: (data: InboundEnded) => void;
   /** Backend: whether the webphone should answer the server's INVITE, setting up the call it brings */
   takeSipCall: (info: IncomingSipCall) => boolean;
   finishWrapUp: () => void;
@@ -143,7 +161,21 @@ function later(ms: number, fn: () => void) {
   timers.add(t);
 }
 
+// Accept/reject inbound, as the web's incoming panel: the ring time the server sent with the call (socket
+// inbound:incoming), the timer that declines it once that time is up, and the last ring the server ended itself
+// (the reason for it can arrive just after the webphone's hang-up has already cleared the call)
+let ringInfo: InboundRing | null = null;
+let ringTimer: ReturnType<typeof setTimeout> | null = null;
+let serverEndedRing: { agentCallUuid?: string | null; at: number } | null = null;
+const DEFAULT_RING_SEC = 30;
+
+function clearRingTimer() {
+  if (ringTimer) clearTimeout(ringTimer);
+  ringTimer = null;
+}
+
 function clearTimers() {
+  clearRingTimer();
   timers.forEach(clearTimeout);
   timers.clear();
   if (qualityTimer) clearInterval(qualityTimer);
@@ -210,22 +242,37 @@ export const useCall = create<CallStore>((set, get) => {
     if (c.mode === 'voip') startQuality();
   };
 
-  // Like the web after a manual call: the server's session turns INCALL once the customer answers
+  // Like the web after a manual call (startCallStatusPolling): the server's session turns INCALL once the
+  // customer answers, and the polling stops there, or on READY / DISPO, when the server is done with the call
   const connectWhenAnswered = (id: string) => {
-    if (statusPoll) clearInterval(statusPoll);
+    const stop = () => {
+      if (statusPoll) clearInterval(statusPoll);
+      statusPoll = null;
+    };
+    stop();
     statusPoll = setInterval(() => {
       api.liveCalls
         .status()
         .then((status) => {
-          if (get().call?.id !== id) {
-            if (statusPoll) clearInterval(statusPoll);
-            statusPoll = null;
-          } else if (status === 'INCALL') {
-            if (statusPoll) clearInterval(statusPoll);
-            statusPoll = null;
+          const c = get().call;
+          if (c?.id !== id) return stop();
+          if (status === 'INCALL') {
+            stop();
             connect(id);
+          } else if (status === 'READY' || status === 'DISPO') {
+            stop();
+            // A call that ended before it ever reached the webphone (once it has, the webphone's own hang-up ends
+            // it): on DISPO the server waits for a disposition, so wrap-up; on READY there's nothing to dispose
+            if (c.onWebphone || c.connectedAt) return;
+            if (status === 'DISPO') return get().remoteEnded();
+            clearTimers();
+            nativeCall.reportEnded(c.id);
+            recordCall({ ...c, state: 'ended', endedAt: Date.now() }, 'failed');
+            set({ call: null, consult: null, conference: null });
           }
         })
+        // The web stops on the first failed check, but its call also connects on the webphone's answer; here the
+        // INCALL check is what connects the call, so a dropped check is simply tried again a second later
         .catch(() => undefined);
     }, 1000);
   };
@@ -276,6 +323,8 @@ export const useCall = create<CallStore>((set, get) => {
         error: null,
         ...meta,
         uuid: info.callUuid ?? meta.uuid,
+        // It came in as the webphone's call, so the webphone's hang-up is what ends it
+        onWebphone: true,
         campaignName: findCampaign(info.campaignId ?? undefined)?.name ?? meta.campaignName,
         campaignId: info.campaignId ?? undefined,
         leadId: info.leadId,
@@ -287,10 +336,32 @@ export const useCall = create<CallStore>((set, get) => {
       startQuality();
     } else if (info.acceptReject) {
       nativeCall.reportIncoming(id, contact?.name ?? number);
+      startRingTimer();
     } else {
       nativeCall.reportOutgoing(id, number);
       connectWhenAnswered(id);
     }
+  };
+
+  /**
+   * The web's ring timer (IncomingCallPanel): an accept/reject call not answered within the ring time the
+   * server sent (30 s when it didn't) is declined, as if the agent pressed Decline. Counted from when it rang.
+   * As on the web, this happens even while an Accept is still with the server.
+   */
+  const startRingTimer = () => {
+    clearRingTimer();
+    const c = get().call;
+    if (!c || c.direction !== 'inbound' || c.state !== 'ringing') return;
+    const sent = ringInfo && (!ringInfo.agentCallUuid || ringInfo.agentCallUuid === c.agentCallUuid) ? ringInfo.ringTimeoutSec : undefined;
+    const seconds = typeof sent === 'number' && sent > 0 ? sent : DEFAULT_RING_SEC;
+    ringTimer = setTimeout(
+      () => {
+        ringTimer = null;
+        const cur = get().call;
+        if (cur?.id === c.id && cur.state === 'ringing') get().decline();
+      },
+      Math.max(0, seconds * 1000 - (Date.now() - c.createdAt)),
+    );
   };
 
   /** The conference's members as the server has them, every 3 s like the web; this agent isn't listed */
@@ -350,6 +421,10 @@ export const useCall = create<CallStore>((set, get) => {
       if (kind === 'transfer') await api.liveCalls.transfer(body);
       else await api.liveCalls.conference(body);
       if (get().consult?.startedAt === startedAt) set({ consult: null });
+      // The web's success toasts
+      notify(kind === 'transfer' ? 'Call handed over successfully' : 'Conference connected successfully', 'success', undefined, {
+        title: kind === 'transfer' ? 'Transfer Done' : 'Joined Up',
+      });
       if (kind === 'conference' && get().call?.id === c.id) {
         set({ conference: get().conference ?? { startedAt: Date.now(), legs: [] } });
         watchConference(c.id, c.uuid);
@@ -358,7 +433,10 @@ export const useCall = create<CallStore>((set, get) => {
       if (kind === 'transfer') transferredTo = null;
       const x = get().consult;
       if (!x || x.startedAt !== startedAt) return;
-      const message = e instanceof Error ? e.message : 'Could not reach them';
+      // The web's texts: an answer of { success:false } shows its message or "Target did not answer or was busy";
+      // any other failure the server's message or "Failed. Please try again." (shown under "Call Failed")
+      const ok200 = e instanceof ApiError && e.server?.status !== undefined && e.server.status < 400;
+      const message = ok200 ? webText(e, ['message'], 'Target did not answer or was busy') : webText(e, ['message'], 'Failed. Please try again.');
       set({ consult: { ...x, state: /time ?out|no answer|not answer/i.test(message) ? 'no-answer' : 'declined', error: message } });
     }
   };
@@ -486,7 +564,11 @@ export const useCall = create<CallStore>((set, get) => {
       set({ conference: { ...conf, legs: conf.legs.map((l) => (l.id === id ? { ...l, muted: !l.muted } : l)) } });
       const c = get().call;
       // The member's mute in the conference room; the next poll shows the server's state either way
-      if (USE_BACKEND && leg && c) void api.liveCalls.conferenceMute(c.uuid, id, !leg.muted).catch(() => undefined);
+      if (USE_BACKEND && leg && c) {
+        void api.liveCalls
+          .conferenceMute(c.uuid, id, !leg.muted)
+          .catch(() => notify(`Couldn't ${leg.muted ? 'unmute' : 'mute'} ${leg.name}`, 'error', undefined, { title: 'Action failed' }));
+      }
     },
 
     removeLeg: (id) => {
@@ -497,7 +579,14 @@ export const useCall = create<CallStore>((set, get) => {
         // Out of the conference room on the server. The call stays in the room with whoever is left (the
         // web ends the whole conference instead once one participant is left); the next poll shows it.
         const c = get().call;
-        if (c) void api.liveCalls.conferenceKick(c.uuid, id).catch(() => undefined);
+        const leg = conf.legs.find((l) => l.id === id);
+        // The web's toasts: "Removed" on success, "Action failed" otherwise
+        if (c && leg) {
+          void api.liveCalls.conferenceKick(c.uuid, id).then(
+            () => notify(`${leg.name} was removed from the conference`, 'success', undefined, { title: 'Removed' }),
+            () => notify(`Couldn't remove ${leg.name}`, 'error', undefined, { title: 'Action failed' }),
+          );
+        }
         if (!legs.some((l) => l.kind === 'customer')) return get().end();
         set({ conference: { ...conf, legs } });
         return;
@@ -566,18 +655,37 @@ export const useCall = create<CallStore>((set, get) => {
       } else resolved = pref;
 
       if (get().call?.id !== id) return { ok: true };
-      patch({ mode: resolved, state: 'dialing' });
+      // Backend: End waits for the server's answer to the dial, as the web's dial button stays busy until then;
+      // ending earlier would leave the server dialing a customer the app no longer shows
+      patch({ mode: resolved, state: 'dialing', ...(USE_BACKEND && { dialPending: true }) });
       let dialed: Awaited<ReturnType<CallAdapter['dial']>>;
       try {
         dialed = await adapterFor(resolved).dial({ number, contactId: contact?.id ?? null });
+        if (get().call?.id === id) patch({ dialPending: false });
       } catch (e) {
+        const cur = get().call;
+        // A call that is no longer on screen: nothing to report
+        if (cur?.id !== id) return { ok: true };
+        // The server dialed the customer and its call already reached the webphone (the request failed on the way
+        // back, e.g. the connection dropped): the call goes ahead, so no error, as on the web, whose call screen
+        // runs on the webphone's call rather than on this request
+        if (USE_BACKEND && cur.onWebphone) {
+          patch({ dialPending: false });
+          nativeCall.reportOutgoing(id, number);
+          if (cur.state === 'dialing') patch({ state: 'ringing' });
+          connectWhenAnswered(id);
+          return { ok: true };
+        }
         clearTimers();
-        if (get().call?.id === id) set({ call: null });
+        set({ call: null });
+        if (USE_BACKEND) {
+          // The web's manual call: a "Call Failed" toast with the server's message, else its error, else its fallback
+          return { ok: false, toast: true, title: 'Call Failed', message: webText(e, ['message', 'error'], 'Unable to start call') };
+        }
         return {
           ok: false,
           title: 'Call could not start',
-          // The backend's reason (DNC, outside calling hours, …) reads as it is
-          message: e instanceof Error ? (USE_BACKEND ? e.message : `${e.message}. Try again when you have signal.`) : 'Try again.',
+          message: e instanceof Error ? `${e.message}. Try again when you have signal.` : 'Try again.',
         };
       }
       nativeCall.reportOutgoing(id, number);
@@ -586,7 +694,8 @@ export const useCall = create<CallStore>((set, get) => {
         const current = get().call;
         if (current?.id === id) {
           patch({
-            uuid: dialed.callId,
+            // The INVITE's id wins when it came first (the web keeps the INVITE's too)
+            uuid: current.onWebphone ? current.uuid : dialed.callId,
             leadId: dialed.leadId ?? current.leadId ?? null,
             campaignId: dialed.campaignId ?? current.campaignId,
             ...(current.state === 'dialing' && { state: 'ringing' as const }),
@@ -640,18 +749,27 @@ export const useCall = create<CallStore>((set, get) => {
     answer: async () => {
       const c = get().call;
       if (!c || c.state !== 'ringing' || c.direction !== 'inbound') return;
-      clearTimers();
-      patch({ state: 'dialing' });
       if (USE_BACKEND) {
-        // Accept/reject inbound: the webphone already answered, the server connects the customer on Accept
+        // Accept/reject inbound: the webphone already answered, the server connects the customer on Accept. As
+        // the web's incoming panel: it keeps ringing while Accept is with the server, and if that fails the
+        // agent can press Accept again ("Inbound call" / "Failed to accept call")
+        if (c.accepting) return;
+        patch({ accepting: true });
         try {
           await api.liveCalls.acceptInbound(c.uuid, c.agentCallUuid ?? null);
-          connectWhenAnswered(c.id);
-        } catch (e) {
-          patch({ error: e instanceof Error ? e.message : 'Could not take the call' });
+        } catch {
+          if (get().call?.id === c.id) patch({ accepting: false });
+          notify('Failed to accept call', 'error', undefined, { title: 'Inbound call' });
+          return;
         }
+        if (get().call?.id !== c.id) return;
+        clearTimers();
+        patch({ accepting: false, state: 'dialing' });
+        connectWhenAnswered(c.id);
         return;
       }
+      clearTimers();
+      patch({ state: 'dialing' });
       await adapterFor(c.mode)
         .answer(c.id)
         .catch(() => undefined);
@@ -685,6 +803,23 @@ export const useCall = create<CallStore>((set, get) => {
       const c = get().call;
       if (!c || (c.state !== 'connected' && c.state !== 'held')) return;
       const on = c.state === 'connected';
+      if (USE_BACKEND) {
+        // The web's toggleHold: one request at a time (taps while it runs are ignored), and the call only shows
+        // "On hold" once the server has put the customer on hold music; a failure leaves it as it was
+        if (c.holdPending) return;
+        patch({ holdPending: true, holdFailed: false, error: null });
+        const settle = (p: Partial<ActiveCall>) => {
+          if (get().call?.id === c.id) patch({ holdPending: false, ...p });
+        };
+        void adapterFor(c.mode)
+          .hold(c.uuid, on)
+          .then(
+            () => settle({ state: on ? 'held' : 'connected', held: on }),
+            // The web's holdError: the server's message, else its error, else "Could not hold/resume the call"
+            (e) => settle({ holdFailed: true, error: webText(e, ['message', 'error'], `Could not ${on ? 'hold' : 'resume'} the call`) }),
+          );
+        return;
+      }
       patch({ state: on ? 'held' : 'connected', held: on });
       void adapterFor(c.mode)
         .hold(c.uuid, on)
@@ -735,6 +870,8 @@ export const useCall = create<CallStore>((set, get) => {
         recordCall(ended, 'missed');
         createMissedTask(ended);
         set({ call: null });
+        // Its reason (inbound:ended) can come just after this
+        serverEndedRing = { agentCallUuid: c.agentCallUuid, at: Date.now() };
         return;
       }
       recordCall(ended, c.connectedAt ? 'answered' : 'no-answer', 'customer');
@@ -743,13 +880,55 @@ export const useCall = create<CallStore>((set, get) => {
       reportEnded();
     },
 
+    inboundIncoming: (data) => {
+      ringInfo = data;
+      const c = get().call;
+      // The ring time can arrive after the call itself: restart the timer with it
+      if (c?.direction === 'inbound' && c.state === 'ringing' && (!data.agentCallUuid || data.agentCallUuid === c.agentCallUuid)) {
+        startRingTimer();
+      }
+    },
+
+    inboundEnded: ({ agentCallUuid, reason }) => {
+      // As the web's incoming panel (components/analytics/DialpadPanel.tsx): only for the ring still on screen,
+      // or one the server just ended; a call the agent declined or accepted has nothing to report
+      const c = get().call;
+      const ringing = c?.direction === 'inbound' && c.state === 'ringing' && (!agentCallUuid || agentCallUuid === c.agentCallUuid);
+      const justEnded =
+        !!serverEndedRing && Date.now() - serverEndedRing.at < 15000 && (!agentCallUuid || agentCallUuid === serverEndedRing.agentCallUuid);
+      if (!ringing && !justEnded) return;
+      serverEndedRing = null;
+      if (!reason || reason === 'connected') return;
+      // The server has moved on: the ring is over, recorded as a missed call
+      if (ringing) get().remoteEnded();
+      serverEndedRing = null;
+      notify(
+        reason === 'timeout'
+          ? 'Missed inbound call'
+          : reason === 'customer_gone'
+            ? 'Caller disconnected'
+            : reason === 'preempted'
+              ? 'Call was answered by a supervisor'
+              : 'Inbound call ended',
+        'info',
+        undefined,
+        { title: 'Inbound call' },
+      );
+    },
+
     takeSipCall: (info) => {
       const c = get().call;
       // The call the agent just dialed from here: the server's INVITE carries its customer's number
       if (c) {
         const sameNumber = !!info.customerNumber && digits(c.number).endsWith(digits(info.customerNumber).slice(-10));
         if (c.direction !== 'outbound' || (c.state !== 'dialing' && c.state !== 'ringing') || !sameNumber) return false;
-        patch({ leadId: c.leadId ?? info.leadId, campaignId: c.campaignId ?? info.campaignId ?? undefined });
+        // Like the web, the INVITE's customer leg (X-Master-Call-Id / X-Call-Id) becomes the call's id for hold etc.
+        patch({
+          onWebphone: true,
+          uuid: info.callUuid ?? c.uuid,
+          leadId: c.leadId ?? info.leadId,
+          campaignId: c.campaignId ?? info.campaignId ?? undefined,
+        });
         return true;
       }
       // A supervisor listening in, whispering or barging in: answered with no call screen, as on the web

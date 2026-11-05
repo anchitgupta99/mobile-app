@@ -23,7 +23,8 @@ type DataState = {
   /** Resolves true when data was refreshed */
   sync: () => Promise<boolean>;
   addCall: (call: CallRecord) => void;
-  saveDisposition: (payload: DispositionPayload, extra?: { label: string }) => void;
+  /** Backend: resolves once the server accepted it and rejects with its reason; demo: queued, resolves at once */
+  saveDisposition: (payload: DispositionPayload, extra?: { label: string }) => Promise<void>;
   upsertTask: (task: Task) => void;
   completeTask: (id: string) => void;
   snoozeTask: (id: string, minutes: number) => void;
@@ -208,9 +209,13 @@ export const useData = create<DataState>()(
         }));
         useOutbox.getState().enqueue({ kind: 'call', label: 'Call log', payload: call });
       },
-      saveDisposition: (payload, extra) => {
+      saveDisposition: async (payload, extra) => {
         const label = extra?.label ?? payload.code;
         const call = get().calls.find((c) => c.id === payload.callId);
+        // Backend: sent straight away, as the web's Submit, and the call only shows the disposition once the
+        // server has accepted it; a rejection reaches the wrap-up screen with the server's reason
+        const direct = USE_BACKEND && !!payload.server;
+        if (direct) await api.calls.disposition(uid('dp'), payload);
         set((s) => {
           return {
             calls: s.calls.map((c) =>
@@ -226,6 +231,7 @@ export const useData = create<DataState>()(
             ),
           };
         });
+        if (direct) return;
         useOutbox.getState().enqueue({ kind: 'disposition', label: `Disposition · ${label}`, payload });
         // Other devices read the contact's last outcome from the contact row, so send that change too
         if (call?.contactId)

@@ -40,6 +40,19 @@ type BackendLogin = {
 };
 
 /** GET /v1/api/agent/mobile/webphone/config: what the in-app SIP phone needs to register */
+/** The server's password rules, sent with a reset token; the "Create new password" checklist is built from them */
+export type PasswordRules = {
+  minLength: number;
+  uppercase: boolean;
+  lowercase: boolean;
+  number: boolean;
+  symbol: boolean;
+  historyDepth: number;
+};
+
+/** The web's time limit on the forgot-password requests */
+const RESET_TIMEOUT_MS = 20000;
+
 export type WebphoneConfig = {
   extension: string;
   password: string;
@@ -152,8 +165,28 @@ type BackendCallRow = {
 
 /** How many days of history the Calls tab loads (the web pages through the same list) */
 const HISTORY_DAYS = 30;
+/** The server returns at most 100 rows a page; enough pages for a busy month */
+const HISTORY_PAGE_SIZE = 100;
+const HISTORY_MAX_PAGES = 10;
+
+/**
+ * The history's times come formatted in the tenant's time zone as "05-11-2026 12:22" (day-month-year), which
+ * the phone can't read as a date, so they become ISO times here, read as the phone's local time (the same zone
+ * for an agent working in the tenant's country). Anything else the phone can read is kept as is.
+ */
+function historyTime(s: string | null): string | null {
+  if (!s) return null;
+  const m = /^(\d{1,2})-(\d{1,2})-(\d{4})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?/.exec(s.trim());
+  if (m) {
+    const [, d, mo, y, h, mi, sec = '0'] = m;
+    return new Date(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(sec)).toISOString();
+  }
+  const t = Date.parse(s);
+  return Number.isNaN(t) ? null : new Date(t).toISOString();
+}
 
 function toCallRecord(r: BackendCallRow): CallRecord {
+  const startedAt = historyTime(r.initiated_at) ?? historyTime(r.answered_at) ?? historyTime(r.ended_at) ?? new Date(0).toISOString();
   const inbound = (r.call_type ?? '').toUpperCase() === 'INBOUND';
   const answered = !!r.answered_at;
   const dispo = r.disposition;
@@ -167,7 +200,7 @@ function toCallRecord(r: BackendCallRow): CallRecord {
     direction: inbound ? 'inbound' : 'outbound',
     outcome: answered ? 'answered' : inbound ? 'missed' : 'no-answer',
     mode: 'voip',
-    startedAt: r.initiated_at,
+    startedAt,
     durationSec: r.duration ?? 0,
     talkSec: r.talk_duration ?? 0,
     disconnectedBy: (r.disconnected_by ?? '').toLowerCase().includes('agent') ? 'agent' : 'customer',
@@ -179,7 +212,7 @@ function toCallRecord(r: BackendCallRow): CallRecord {
     campaignName: r.campaign_name ?? undefined,
     leadId: r.leadId,
     fallbackUsed: false,
-    updatedAt: r.ended_at ?? r.initiated_at,
+    updatedAt: historyTime(r.ended_at) ?? startedAt,
   };
 }
 
@@ -331,23 +364,32 @@ export const api = {
     async logout() {
       if (USE_BACKEND) await mobileRequest('POST', '/auth/logout', {});
     },
-    requestPasswordReset(email: string) {
-      return request(() => {
-        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) throw new ApiError('validation', 'Enter a valid email address');
-        return { requestId: `pwr_${Date.now()}` };
-      });
+    /**
+     * Forgot password, as the web (services/auth/forgotPasswordService.ts, 20 s limit): a code to the agent's
+     * registered email for their email or username, the code exchanged for a reset token, then the new password.
+     */
+    requestPasswordReset(identifier: string): Promise<{ maskedEmail: string; resendIn: number }> {
+      if (USE_BACKEND) {
+        return mobileRequest('POST', '/auth/forgot-password/request-otp', { identifier }, { timeoutMs: RESET_TIMEOUT_MS });
+      }
+      return request(() => ({ maskedEmail: identifier, resendIn: 30 }));
     },
-    verifyResetCode(requestId: string, code: string) {
-      return request(() => {
-        if (!/^\d{6}$/.test(code)) throw new ApiError('validation', 'Enter the 6-digit code');
-        return { resetToken: `rst_${requestId}` };
-      });
+    verifyResetCode(identifier: string, otp: string): Promise<{ resetToken: string; rules?: PasswordRules }> {
+      if (USE_BACKEND) {
+        return mobileRequest('POST', '/auth/forgot-password/verify-otp', { identifier, otp }, { timeoutMs: RESET_TIMEOUT_MS });
+      }
+      return request(() => ({ resetToken: `rst_${identifier}_${otp}` }));
     },
-    resetPassword(resetToken: string, password: string) {
-      return request(() => {
-        if (password.length < 8) throw new ApiError('validation', 'Use at least 8 characters');
-        return { ok: true, resetToken };
-      });
+    resetPassword(resetToken: string, newPassword: string, confirmPassword: string): Promise<{ success: boolean }> {
+      if (USE_BACKEND) {
+        return mobileRequest(
+          'POST',
+          '/auth/forgot-password/reset',
+          { resetToken, newPassword, confirmPassword },
+          { timeoutMs: RESET_TIMEOUT_MS },
+        );
+      }
+      return request(() => ({ success: true }));
     },
   },
 
@@ -485,12 +527,22 @@ export const api = {
   calls: {
     async list(updatedSince?: string) {
       if (USE_BACKEND) {
-        // The server's own history for the last HISTORY_DAYS days, newest first; it has no delta, so it's the whole window
-        const from = new Date(Date.now() - HISTORY_DAYS * 86400000);
-        const pad = (n: number) => String(n).padStart(2, '0');
-        const fromDate = `${from.getFullYear()}-${pad(from.getMonth() + 1)}-${pad(from.getDate())}`;
-        const res = await mobileRequest<{ data: BackendCallRow[] }>('GET', `/calls/history?page=1&limit=200&fromDate=${fromDate}`);
-        return { items: (res.data ?? []).map(toCallRecord), cursor: now() };
+        // The server's own history (agent_call_history, kept across logins) for the last HISTORY_DAYS days, as the
+        // web's History page asks for it: fromDate and toDate together (the server ignores one without the
+        // other), page by page. It has no delta, so it's the whole window; the store sorts it newest first.
+        const day = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        const fromDate = day(new Date(Date.now() - HISTORY_DAYS * 86400000));
+        const toDate = day(new Date());
+        const rows: BackendCallRow[] = [];
+        for (let page = 1; page <= HISTORY_MAX_PAGES; page++) {
+          const res = await mobileRequest<{ data: BackendCallRow[]; pagination?: { totalPages?: number } }>(
+            'GET',
+            `/calls/history?page=${page}&limit=${HISTORY_PAGE_SIZE}&fromDate=${fromDate}&toDate=${toDate}`,
+          );
+          rows.push(...(res.data ?? []));
+          if (page >= (res.pagination?.totalPages ?? 1) || (res.data ?? []).length < HISTORY_PAGE_SIZE) break;
+        }
+        return { items: rows.map(toCallRecord), cursor: now() };
       }
       return request(() => ({ items: since(db.calls, updatedSince), cursor: now() }));
     },

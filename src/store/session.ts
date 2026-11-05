@@ -3,7 +3,7 @@ import { persist } from 'zustand/middleware';
 import { Platform } from 'react-native';
 import { api } from '@/api/client';
 import { ApiError } from '@/api/errors';
-import { setAuthToken, USE_BACKEND } from '@/api/http';
+import { setAuthToken, setSessionExpiredHandler, USE_BACKEND } from '@/api/http';
 import type { Agent, AgentStatus, Campaign, LoginMode } from '@/domain/types';
 import { setCampaignError, useCampaigns } from './campaigns';
 import { useData } from './data';
@@ -195,6 +195,15 @@ export const useSession = create<SessionState>()(
     },
   ),
 );
+
+/** Shown on the login screen after the server refused the login (expired after 24 h, or revoked): the backend's wording */
+export const SESSION_EXPIRED = 'Your session has expired. Please log in again.';
+
+// A 401 from any request: signed out as on the web. The server already ended this login, so no logout call.
+setSessionExpiredHandler(() => {
+  const s = useSession.getState();
+  if (s.token) s.logout(SESSION_EXPIRED, { serverEnded: true });
+});
 
 /** Runs useSession.syncCampaign and keeps why it failed for the go-live screen (which offers Try again) */
 export function syncCampaign() {

@@ -376,9 +376,14 @@ export function Preflight({ mode, onDone }: { mode: 'golive' | 'diagnostics'; on
           state={states[1]}
           detail={
             USE_BACKEND
-              ? sip.status === 'registered'
-                ? `Registered · Extension ${sip.extension ?? '—'}`
-                : (sip.detail ?? 'Not registered')
+              ? // The web's system check (layout/agent/SystemCheckModal.tsx)
+                sip.status === 'registered'
+                ? ['Registered', sip.extension ? `Extension ${sip.extension}` : null, agent?.campaignName ?? null].filter(Boolean).join(' · ')
+                : sip.status === 'connecting' || sip.status === 'idle'
+                  ? 'Connecting to webphone…'
+                  : sip.status === 'unsupported'
+                    ? (sip.detail ?? 'Registration failed — check SIP configuration')
+                    : 'Registration failed — check SIP configuration'
               : IS_DEMO
                 ? `Registered · Extension ${agent?.extension ?? '—'}`
                 : 'Extension registration isn’t wired up yet'

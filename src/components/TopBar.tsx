@@ -6,7 +6,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { feedback } from '@/feedback';
 import { duration } from '@/theme/motion';
 import { RollingDigits } from './motion/RollingDigits';
+import { USE_BACKEND } from '@/api/http';
 import { useNetwork } from '@/api/network';
+import { useSipPhone } from '@/telephony/sip/sipPhone';
 import { formatDuration } from '@/domain/format';
 import type { AgentStatus } from '@/domain/types';
 import { useDueTasks } from '@/hooks/useDueTasks';
@@ -149,6 +151,46 @@ function ConnectivityChip() {
   );
 }
 
+/**
+ * The webphone's state, as the web's top-bar indicator (layout/agent/AgentTopNav.tsx): "Web" with a green dot when
+ * registered, amber while connecting, red when registration failed, grey otherwise, and a retry when it isn't
+ * registered. Opens Diagnostics, which has the details and Try again.
+ */
+function WebphoneChip() {
+  const { c } = useTheme();
+  const status = useSipPhone((s) => s.status);
+  if (!USE_BACKEND || status === 'idle') return null;
+  const registered = status === 'registered';
+  const dot = registered ? c.signalOk : status === 'connecting' ? c.signalWarn : status === 'failed' ? c.danger : c.ink3;
+  const state = registered ? 'registered' : status === 'connecting' ? 'connecting' : status === 'failed' ? 'registration failed' : 'not connected';
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`Webphone ${state}`}
+      accessibilityHint="Opens diagnostics"
+      onPress={() => {
+        if (!registered && status !== 'connecting') void useSipPhone.getState().retry();
+        router.push('/diagnostics');
+      }}
+      style={{
+        height: 32,
+        paddingHorizontal: 10,
+        borderRadius: 16,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        backgroundColor: c.topbarControl,
+      }}
+    >
+      <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: dot }} />
+      <T v="caption" color={c.onTopbar} style={{ fontFamily: font.semibold }}>
+        Web
+      </T>
+      {!registered && <Icon name="refresh" size={16} color={c.onTopbar} />}
+    </Pressable>
+  );
+}
+
 function ThemeToggle() {
   const { scheme } = useTheme();
   const set = useSettings((s) => s.set);
@@ -233,6 +275,7 @@ export function TopBar() {
     >
       <StatusPill />
       <View style={{ flex: 1 }} />
+      <WebphoneChip />
       <ConnectivityChip />
       <NotificationBell />
       <ThemeToggle />

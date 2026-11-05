@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Pressable, ScrollView, TextInput, View } from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, { FadeIn, runOnJS } from 'react-native-reanimated';
@@ -375,10 +375,20 @@ export default function ActiveCall() {
         />
         <Control
           icon={call.state === 'held' ? 'play-arrow' : 'pause'}
-          label={call.state === 'held' ? 'Resume' : 'Hold'}
+          label={
+            call.holdPending
+              ? call.state === 'held'
+                ? 'Resuming…'
+                : 'Holding…'
+              : call.holdFailed
+                ? 'Failed'
+                : call.state === 'held'
+                  ? 'Resume'
+                  : 'Hold'
+          }
           active={call.state === 'held'}
           onPress={toggleHold}
-          disabled={!live || !!consult}
+          disabled={!live || !!consult || !!call.holdPending}
         />
         <Control
           icon="phone-forwarded"
@@ -400,7 +410,10 @@ export default function ActiveCall() {
         <PressableScale
           accessibilityRole="button"
           accessibilityLabel="End call"
+          accessibilityState={{ disabled: !!call.dialPending, busy: !!call.dialPending }}
           scaleTo={0.96}
+          // The server is still placing the call: End waits for its answer, as the web's dial button stays busy
+          disabled={!!call.dialPending}
           onPress={() => {
             if (!call.connectedAt) feedback('press');
             end();
@@ -410,13 +423,18 @@ export default function ActiveCall() {
             height: 64,
             borderRadius: 32,
             backgroundColor: c.danger,
+            opacity: call.dialPending ? 0.6 : 1,
             alignItems: 'center',
             justifyContent: 'center',
             flexDirection: 'row',
             gap: 10,
           }}
         >
-          <Icon name="call-end" size={30} color={c.onDanger} />
+          {call.dialPending ? (
+            <ActivityIndicator color={c.onDanger} />
+          ) : (
+            <Icon name="call-end" size={30} color={c.onDanger} />
+          )}
           <T v="h3" color={c.onDanger}>
             End
           </T>

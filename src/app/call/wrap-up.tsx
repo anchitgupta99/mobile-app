@@ -4,6 +4,7 @@ import { ActivityIndicator, KeyboardAvoidingView, ScrollView, View } from 'react
 import Animated, { FadeIn, FadeOut, LinearTransition } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { api } from '@/api/client';
+import { webText } from '@/api/errors';
 import { USE_BACKEND } from '@/api/http';
 import { useNetwork } from '@/api/network';
 import { DispositionPicker } from '@/components/DispositionPicker';
@@ -173,6 +174,9 @@ export default function WrapUp() {
   const [notes, setNotes] = useState(call?.notes || draft);
   const [fields, setFields] = useState<Record<string, string>>({});
   const [touched, setTouched] = useState(false);
+  // Which Submit is with the server, and why the server last turned it down (shown above the buttons, as the web's)
+  const [saving, setSaving] = useState<'available' | 'break' | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   // Nothing leaves a pending wrap-up: hardware back, swipe, or browser back. The store is read
   // live because submit() clears the wrap-up and closes in the same tick.
@@ -271,26 +275,43 @@ export default function WrapUp() {
     };
   };
 
-  const submit = (next: 'available' | 'break' | 'stay', timeout = false) => {
+  const submit = async (next: 'available' | 'break' | 'stay', timeout = false) => {
+    if (saving) return;
     setTouched(true);
     if (!timeout && !valid) {
       tap('warning');
       return;
     }
-    saveDisposition(
-      {
-        callId: call.id,
-        code: chosen?.code ?? 'none',
-        notes: notes.trim(),
-        fields,
-        submittedAt: new Date().toISOString(),
-        ...(fromServer && { server: serverBody(timeout) }),
-      },
-      { label: chosen ? pathLabel(path) : timeout ? 'Auto-disposed' : 'No disposition' },
-    );
+    setSubmitError(null);
+    setSaving(next === 'break' ? 'break' : 'available');
+    try {
+      await saveDisposition(
+        {
+          callId: call.id,
+          code: chosen?.code ?? 'none',
+          notes: notes.trim(),
+          fields,
+          submittedAt: new Date().toISOString(),
+          ...(fromServer && { server: serverBody(timeout) }),
+        },
+        { label: chosen ? pathLabel(path) : timeout ? 'Auto-disposed' : 'No disposition' },
+      );
+    } catch (e) {
+      // The web's failed Submit: the agent stays on wrap-up with the server's message (else the web's
+      // fallback) in red and in a toast, fixes it and submits again. The "fill and save in Lead Details"
+      // message reads as the web shows it, under "Required Fields Missing".
+      const message = webText(e, ['message'], 'Failed to submit. Please try again.');
+      setSubmitError(message);
+      setSaving(null);
+      notify(message, 'error', undefined, {
+        title: message.startsWith('Please fill and save in Lead Details') ? 'Required Fields Missing' : 'Submission Failed',
+      });
+      return;
+    }
     const cbField = pathFields.find((f) => f.kind === 'datetime' && f.createsTask);
-    // As the web, after the disposition: the callback, routed back to this agent
-    if (fromServer && !timeout && cbField && fields[cbField.key] && call.campaignId) {
+    // As the web, once the disposition is saved (also on an auto-submit when a time was set): the callback,
+    // routed back to this agent. Its failure reads as the web's ("Submission Failed"); the disposition stays saved.
+    if (fromServer && cbField && fields[cbField.key] && call.campaignId) {
       api.callbacks
         .create({
           leadId: call.leadId ?? null,
@@ -302,7 +323,9 @@ export default function WrapUp() {
         })
         // On the server now: the Callbacks tab picks it up from there
         .then(() => useData.getState().sync())
-        .catch((e) => notify(`Callback not saved: ${e instanceof Error ? e.message : 'try again'}`, 'error'));
+        .catch((e) =>
+          notify(webText(e, ['message'], 'Failed to submit. Please try again.'), 'error', undefined, { title: 'Submission Failed' }),
+        );
     }
     if (!fromServer && cbField && fields[cbField.key]) {
       upsertTask({
@@ -331,8 +354,17 @@ export default function WrapUp() {
     // Against the backend the disposition itself makes the agent READY; a break needs its type, picked next
     if (next === 'available' || (next === 'break' && !fromServer)) setStatus(next);
     if (next === 'break') setTimeout(() => useStatusSheet.getState().show(true), 350);
-    if (timeout) notify('Wrap-up time is over, so the disposition was submitted as it was.', 'warning');
     close();
+    if (fromServer) {
+      // The web's success toasts
+      notify(
+        timeout ? 'Wrap-up timer expired — disposition saved automatically.' : 'Your disposition has been saved successfully.',
+        'success',
+        undefined,
+        { silent: true, title: timeout ? 'Disposition Auto-Submitted' : 'Disposition Submitted' },
+      );
+      return;
+    }
     if (postCall && next === 'available' && scheduleAutoCall()) return;
 
     const offline = quality === 'offline';
@@ -406,8 +438,9 @@ export default function WrapUp() {
 
   return (
     <KeyboardAvoidingView behavior={keyboardBehavior} style={{ flex: 1, backgroundColor: c.page }}>
-      {/* As the web: when the campaign's wrap-up time runs out, the disposition goes in as it stands */}
-      {fromServer && !loadingDispositions && <WrapUpTimeout secondsLeft={acwLeft} onTimeout={() => submit('available', true)} />}
+      {/* As the web: when the campaign's wrap-up time runs out, the disposition goes in as it stands, even when
+          the list of dispositions didn't load (then with none, which the server saves as auto-disposed) */}
+      {fromServer && <WrapUpTimeout secondsLeft={acwLeft} onTimeout={() => void submit('available', true)} />}
       <View style={{ backgroundColor: c.topbar, paddingTop: insets.top + 8, paddingBottom: 14, paddingHorizontal: 16, gap: 10 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
           <T v="h2" color={c.onTopbar} style={{ flex: 1 }} accessibilityRole="header">
@@ -562,9 +595,32 @@ export default function WrapUp() {
           borderTopColor: c.divider,
         }}
       >
-        <Button label="Submit and go online" icon="check" size="lg" full onPress={() => submit('available')} disabled={touched && !valid} />
+        {submitError && (
+          <Animated.View entering={FadeIn.duration(duration.base)} style={{ flexDirection: 'row', gap: 8, alignItems: 'flex-start' }}>
+            <Icon name="error-outline" size={18} color={c.errorFg} />
+            <T v="caption" color={c.errorFg} style={{ flex: 1 }} accessibilityLiveRegion="polite">
+              {submitError}
+            </T>
+          </Animated.View>
+        )}
+        <Button
+          label={saving === 'available' ? 'Submitting...' : 'Submit and go online'}
+          icon="check"
+          size="lg"
+          full
+          loading={saving === 'available'}
+          onPress={() => void submit('available')}
+          disabled={(touched && !valid) || !!saving}
+        />
         <View style={{ flexDirection: 'row', gap: 10 }}>
-          <Button label="Submit and break" variant="outline" style={{ flex: 1 }} onPress={() => submit('break')} />
+          <Button
+            label={saving === 'break' ? 'Submitting...' : 'Submit and break'}
+            variant="outline"
+            style={{ flex: 1 }}
+            loading={saving === 'break'}
+            onPress={() => void submit('break')}
+            disabled={!!saving}
+          />
         </View>
         <T v="caption" color={c.ink3} style={{ textAlign: 'center', fontFamily: font.regular }}>
           {helpText.requiredFields}

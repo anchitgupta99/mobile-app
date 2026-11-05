@@ -20,9 +20,13 @@ npm run format
 The app talks to the dialer backend's agent mobile routes (`/v1/api/agent/mobile`). Copy `.env.example` to `.env.local` (git ignores it) and set `EXPO_PUBLIC_API_URL`:
 
 - Backend running on your own PC: `http://<your PC's Wi-Fi IPv4>:4000`. Not `localhost`, because the app runs on the phone. The phone must be on the same Wi-Fi, and the address changes when the PC joins another network.
-- A shared backend (UAT / production): its public URL.
+- A deployed backend (UAT / production): the same value as the web app's `VITE_API_BASE`, e.g. `EXPO_PUBLIC_API_URL=https://<domain>/backend`.
+
+The live socket (`/ws`) uses the API URL's domain automatically (`https://<domain>/backend` → `https://<domain>`), so one value is enough. `EXPO_PUBLIC_SOCKET_URL` is only for a socket on a different domain. For an APK, set the value in the build profile's `env` in `eas.json`, since EAS does not see `.env.local` and the value is fixed into the app at build time.
 
 Restart with `npx expo start -c` after changing it. With no URL the app runs on its in-app demo data.
+
+**APK on the deployed backend** (`eas build --profile preview --platform android`): the `preview` profile in `eas.json` builds an installable APK with `EXPO_PUBLIC_API_URL=https://dialer.claritel.ai/backend`, so it works on any network. Changing the server means changing that value and building again.
 
 The webphone (WebRTC) and the call audio routing need the development build (`eas build --profile development`); they can't run in Expo Go.
 
@@ -34,7 +38,7 @@ The webphone (WebRTC) and the call audio routing need the development build (`ea
 
 ### Demo mode
 
-`IS_DEMO` in `src/mocks/demo.ts` is true in development (`__DEV__`) unless `EXPO_PUBLIC_DEMO=false`; set `EXPO_PUBLIC_DEMO=true` to force it in a release build. It gates everything that only makes sense against the in-memory mock backend: the prefilled login ID and prototype hints, the timer-based preflight checks with fake device names and level meter, the simulated transfer outcomes, and **Home → Demo controls** (fire an incoming call, simulate the app being unreachable so the phone-line fallback kicks in, start or stop fake queue updates, and switch the simulated network between Good, Weak and Offline). With it off, preflight shows "Not available yet" for checks that have no real implementation and the Go live button only waits on the microphone permission.
+`IS_DEMO` in `src/mocks/demo.ts` is true in development (`__DEV__`) unless `EXPO_PUBLIC_DEMO=false`, and always false when the app has a backend (`EXPO_PUBLIC_API_URL`); set `EXPO_PUBLIC_DEMO=true` to force it in a release build without a backend. It gates everything that only makes sense against the in-memory mock backend: the prefilled login ID and prototype hints, the timer-based preflight checks with fake device names and level meter, and the simulated transfer outcomes. With it off, preflight shows "Not available yet" for checks that have no real implementation and the Go live button only waits on the microphone permission.
 
 ## Motion, haptics and sound
 

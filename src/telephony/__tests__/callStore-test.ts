@@ -2,6 +2,9 @@ import { useSession } from '@/store/session';
 import { useData } from '@/store/data';
 import { buildPop, useCall } from '../callStore';
 
+// The toasts are UI (Reanimated), which doesn't load under Jest; as in autoCall-test
+jest.mock('@/components/feedback', () => ({ alertDialog: jest.fn(), notify: jest.fn() }));
+
 const pop = () => buildPop('+919800000000', null);
 
 // The demo's calling-hours check (9:00–21:00 India time) would block the test calls when run in the

@@ -9,7 +9,8 @@ import { useTheme, type Tone, tone as toneOf } from '@/theme';
 import { animateTo, duration } from '@/theme/motion';
 import { Button, Icon, T, tap, type IconName } from './ui';
 
-type Toast = { id: number; message: string; tone: Tone; action?: { label: string; onPress: () => void } };
+/** `title` is the bold first line of the web's toasts, e.g. "Call Failed" over the reason */
+type Toast = { id: number; title?: string; message: string; tone: Tone; action?: { label: string; onPress: () => void } };
 type DialogAction = { label: string; variant?: 'primary' | 'outline' | 'danger' | 'call'; onPress?: () => void };
 type Dialog = { title: string; message: string; icon?: IconName; tone?: Tone; actions: DialogAction[] };
 
@@ -33,10 +34,10 @@ export const useFeedback = create<FeedbackState>((set) => ({
 
 const toastEvents: Partial<Record<Tone, FeedbackEvent>> = { success: 'toast.success', warning: 'toast.warning', error: 'toast.error' };
 
-export function notify(message: string, tone: Tone = 'neutral', action?: Toast['action'], opts?: { silent?: boolean }) {
+export function notify(message: string, tone: Tone = 'neutral', action?: Toast['action'], opts?: { silent?: boolean; title?: string }) {
   const ev = toastEvents[tone];
   if (ev && !opts?.silent) feedback(ev);
-  useFeedback.getState().showToast({ message, tone, action });
+  useFeedback.getState().showToast({ title: opts?.title, message, tone, action });
 }
 
 export function alertDialog(d: Dialog) {
@@ -116,9 +117,16 @@ function ToastCard({ toast, onHide }: { toast: Toast; onHide: () => void }) {
         ]}
       >
         <Icon name={toneIcon[toast.tone]} size={20} color={c.onInvert} />
-        <T v="body" color={c.onInvert} style={{ flex: 1 }}>
-          {toast.message}
-        </T>
+        <View style={{ flex: 1 }}>
+          {!!toast.title && (
+            <T v="bodyStrong" color={c.onInvert}>
+              {toast.title}
+            </T>
+          )}
+          <T v="body" color={c.onInvert}>
+            {toast.message}
+          </T>
+        </View>
         {toast.action && (
           <Pressable
             accessibilityRole="button"

@@ -7,15 +7,12 @@ import { notify } from '@/components/feedback';
 import { Dashboard } from '@/components/Dashboard';
 import { ListPlaceholder } from '@/components/ListPlaceholder';
 import { TaskRow, useTaskActions } from '@/components/TaskRow';
-import { Button, Card, Divider, EmptyState, Icon, SectionHeader, Segmented, T } from '@/components/ui';
+import { Card, Divider, EmptyState, Icon, SectionHeader, T } from '@/components/ui';
 import { useRefresh } from '@/hooks/useRefresh';
-import { IS_DEMO } from '@/mocks/demo';
-import { startQueueSimulator, stopQueueSimulator } from '@/mocks/queueSimulator';
 import { useData } from '@/store/data';
 import { useOutbox } from '@/store/outbox';
 import { useSession } from '@/store/session';
-import { simulateIncoming } from '@/telephony/simulator';
-import { font, useTheme } from '@/theme';
+import { useTheme } from '@/theme';
 
 function greeting(d = new Date()) {
   const h = d.getHours();
@@ -37,80 +34,6 @@ function useQueue() {
     [],
   );
   return waiting;
-}
-
-function DemoControls() {
-  const { c } = useTheme();
-  const status = useSession((s) => s.status);
-  const quality = useNetwork((s) => s.quality);
-  const setQuality = useNetwork((s) => s.setQuality);
-  // Starts with the controls (effect below), so the toggle begins in the "on" position
-  const [queueSim, setQueueSim] = useState(true);
-
-  // The fake queue feed only exists in the demo build; it starts with the controls and keeps
-  // running across tabs so the "In queue" tile stays live
-  useEffect(() => {
-    startQueueSimulator();
-  }, []);
-
-  return (
-    <View>
-      <SectionHeader title="Demo controls" />
-      <Card style={{ gap: 12, borderStyle: 'dashed' }}>
-        <T v="caption">Simulate events from the backend to try the call loop.</T>
-        <View style={{ flexDirection: 'row', gap: 8 }}>
-          <Button
-            label="Incoming call"
-            icon="ring-volume"
-            variant="secondary"
-            size="sm"
-            style={{ flex: 1 }}
-            onPress={() => {
-              if (status !== 'available') notify('Go online to receive calls', 'warning');
-              else simulateIncoming();
-            }}
-          />
-          <Button
-            label="App unreachable"
-            icon="sim-card"
-            variant="outline"
-            size="sm"
-            style={{ flex: 1 }}
-            onPress={() => {
-              if (status !== 'available') return notify('Go online to receive calls', 'warning');
-              notify('VoIP push not acknowledged… ringing your phone line in 5 s', 'info');
-              simulateIncoming({ appUnreachable: true });
-            }}
-          />
-        </View>
-        <Button
-          label={queueSim ? 'Stop fake queue updates' : 'Start fake queue updates'}
-          icon={queueSim ? 'pause' : 'groups'}
-          variant="outline"
-          size="sm"
-          onPress={() => {
-            if (queueSim) stopQueueSimulator();
-            else startQueueSimulator();
-            setQueueSim(!queueSim);
-          }}
-        />
-        <View style={{ gap: 6 }}>
-          <T v="label" color={c.ink2} style={{ fontFamily: font.semibold }}>
-            Network
-          </T>
-          <Segmented
-            value={quality}
-            onChange={setQuality}
-            options={[
-              { value: 'good', label: 'Good', icon: 'wifi' },
-              { value: 'weak', label: 'Weak', icon: 'network-check' },
-              { value: 'offline', label: 'Offline', icon: 'cloud-off' },
-            ]}
-          />
-        </View>
-      </Card>
-    </View>
-  );
 }
 
 export default function Home() {
@@ -184,8 +107,6 @@ export default function Home() {
           )}
         </Card>
       </View>
-
-      {IS_DEMO && <DemoControls />}
     </ScrollView>
   );
 }
