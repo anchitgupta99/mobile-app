@@ -58,7 +58,8 @@ export default function CallDetail() {
           <View style={{ flex: 1, gap: 2 }}>
             <T v="h3">{contact?.name ?? call.customerName ?? 'Unknown number'}</T>
             {contact && <T v="caption">{contact.company}</T>}
-            <PhoneText number={call.number} v="caption" />
+            {/* As the server shows it (masked per campaign); Call back dials the real number */}
+            <PhoneText number={call.displayNumber ?? call.number} v="caption" />
           </View>
           {contact && <Icon name="chevron-right" color={c.ink3} />}
         </Card>

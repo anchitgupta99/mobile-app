@@ -3,6 +3,7 @@ import { ActivityIndicator, Pressable, ScrollView, TextInput, View } from 'react
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, { FadeIn, runOnJS } from 'react-native-reanimated';
+import { USE_BACKEND } from '@/api/http';
 import { CallMeta } from '@/components/call/CallMeta';
 import { ConferencePanel, ConsultView, TargetPicker } from '@/components/call/Transfer';
 import { InfoTip } from '@/components/InfoTip';
@@ -12,7 +13,7 @@ import { PressableScale } from '@/components/motion/PressableScale';
 import { RollingDigits } from '@/components/motion/RollingDigits';
 import { feedback } from '@/feedback';
 import { duration } from '@/theme/motion';
-import { usePhoneDisplay } from '@/components/PhoneText';
+import { useCallParty } from '@/components/PhoneText';
 import { Sheet } from '@/components/Sheet';
 import { notify } from '@/components/feedback';
 import { Avatar, Button, Field, Icon, Segmented, StatusChip, T, tap, type IconName } from '@/components/ui';
@@ -121,7 +122,7 @@ export default function ActiveCall() {
   const notes = useCall((s) => (s.call ? (s.notes[s.call.id] ?? '') : ''));
   const { toggleMute, toggleHold, setRoute, sendDigit, end, setNote } = useCall.getState();
   const script = useData((s) => s.dispositions.script);
-  const phone = usePhoneDisplay();
+  const party = useCallParty();
   const now = useNow(500);
   const [panel, setPanel] = useState<'none' | 'keypad' | 'audio' | 'info'>('none');
   const [infoTab, setInfoTab] = useState<'contact' | 'notes' | 'script'>('notes');
@@ -131,7 +132,8 @@ export default function ActiveCall() {
   const conference = useCall((s) => s.conference);
 
   if (!call) return <View style={{ flex: 1, backgroundColor: c.callScreen }} />;
-  const name = call.pop.contact?.name ?? phone(call.number);
+  const who = party(call, call.pop.contact?.name);
+  const name = who.name;
   const live = call.state === 'connected' || call.state === 'held';
   const stateText =
     call.state === 'checking'
@@ -221,7 +223,7 @@ export default function ActiveCall() {
         </View>
       ) : (
         <View style={{ alignItems: 'center', gap: 6, marginTop: 28, paddingHorizontal: 24 }}>
-          <Avatar name={call.pop.contact?.name ?? '#'} size={84} tone="invert" />
+          <Avatar name={who.named ? name : '#'} size={84} tone="invert" />
           <T
             v="title"
             color={c.onCallScreen}
@@ -231,9 +233,9 @@ export default function ActiveCall() {
           >
             {name}
           </T>
-          {!!call.pop.contact && (
+          {who.named && (
             <T v="body" color={c.onCallScreen2} nums selectable>
-              {phone(call.number)}
+              {who.number}
             </T>
           )}
           {call.state === 'connected' ? (
@@ -569,6 +571,12 @@ export default function ActiveCall() {
                   label="Open callbacks"
                   value={call.pop.openTasks.map((t) => `${t.title} · ${formatRelative(t.dueAt)}`).join('\n') || 'None'}
                 />
+              </>
+            ) : USE_BACKEND ? (
+              // The customer as the server has them (call context), with the web's Lead Details labels
+              <>
+                <InfoLine label="Customer Name" value={call.customerName || '—'} />
+                <InfoLine label="Mobile Number" value={who.number || '—'} />
               </>
             ) : (
               <T v="body" color={c.ink2}>

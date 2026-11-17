@@ -642,13 +642,28 @@ export function Row({
   );
 }
 
-export function Toggle({ value, onChange, label }: { value: boolean; onChange: (v: boolean) => void; label: string }) {
+/** disabled: locked as it is (e.g. on because the outcome requires it); activeColor: the "on" colour, the brand's by default */
+export function Toggle({
+  value,
+  onChange,
+  label,
+  disabled,
+  activeColor,
+}: {
+  value: boolean;
+  onChange: (v: boolean) => void;
+  label: string;
+  disabled?: boolean;
+  activeColor?: string;
+}) {
   const { c } = useTheme();
+  const on = activeColor ?? c.purple;
   return (
     <Pressable
       accessibilityRole="switch"
       accessibilityLabel={label}
-      accessibilityState={{ checked: value }}
+      accessibilityState={{ checked: value, disabled: !!disabled }}
+      disabled={disabled}
       onPress={() => {
         tap();
         onChange(!value);
@@ -659,10 +674,11 @@ export function Toggle({ value, onChange, label }: { value: boolean; onChange: (
         height: 30,
         borderRadius: 15,
         padding: 3,
-        backgroundColor: value ? c.purple : c.mutedFill,
+        backgroundColor: value ? on : c.mutedFill,
         borderWidth: 1,
-        borderColor: value ? c.purple : c.line,
+        borderColor: value ? on : c.line,
         justifyContent: 'center',
+        opacity: disabled ? 0.6 : 1,
       }}
     >
       <View

@@ -9,7 +9,8 @@ import { duration } from '@/theme/motion';
 import { Sheet } from './Sheet';
 import { Divider, Field, Icon, T } from './ui';
 
-const levelLabels = ['Disposition', 'Sub-disposition', 'Sub-sub-disposition'];
+// The web's level names (CallDispositionPanel), then "Sub-Disposition n" deeper down
+const levelLabels = ['Select Disposition', 'Select Sub-Disposition 1', 'Select Sub-Disposition 2'];
 const SEARCH_FROM = 8;
 
 /** A dropdown that looks like a Field and opens a sheet of options */
@@ -113,7 +114,9 @@ export function DispositionPicker({
     <View style={{ gap: 16 }}>
       {levels.map((opts, level) => {
         const chosen = path[level];
-        const name = levelLabels[level] ?? `Level ${level + 1}`;
+        const name = levelLabels[level] ?? `Sub-Disposition ${level}`;
+        // A level under an outcome whose sub-disposition isn't required may be left empty
+        const required = level === 0 || path[level - 1]?.subRequired !== false;
         return (
           <Animated.View
             key={level === 0 ? 'root' : `${level}:${path[level - 1]?.code}`}
@@ -122,11 +125,11 @@ export function DispositionPicker({
             layout={LinearTransition.duration(duration.base)}
           >
             <SelectField
-              label={`${name} *`}
+              label={required ? `${name} *` : name}
               value={chosen?.label ?? null}
-              placeholder={level === 0 ? 'Select disposition' : `Select ${name.toLowerCase()}`}
+              placeholder={level === 0 ? 'Select disposition' : 'Select sub-disposition'}
               dot={dotFor(path[0])}
-              error={showErrors && !chosen ? 'Required' : null}
+              error={showErrors && required && !chosen ? 'Required' : null}
               onPress={() => openSheet(level)}
             />
           </Animated.View>

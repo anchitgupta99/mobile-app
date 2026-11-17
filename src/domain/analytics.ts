@@ -10,9 +10,6 @@ export type Analytics = {
   callTime: { ringing: number; talk: number; hold: number; wrap: number };
   /** Time on each break type, in seconds */
   breaks: { label: string; seconds: number }[];
-  /** Empty when the per-hour charts have no data (the backend has none) */
-  hours: string[];
-  hourly: { outbound: number[]; inbound: number[]; busy: number[]; abandoned: number[] };
-  /** AHT per hour, seconds */
-  aht: { inbound: number[]; outbound: number[]; overall: number };
+  /** Average handling time over the answered calls, seconds */
+  aht: { overall: number };
 };

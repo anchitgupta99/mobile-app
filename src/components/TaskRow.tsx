@@ -32,7 +32,7 @@ export function TaskRow({
   const phone = usePhoneDisplay();
   const overdue = !task.done && new Date(task.dueAt).getTime() < now;
   const slaLeft = task.slaDueAt ? new Date(task.slaDueAt).getTime() - now : null;
-  const who = contact?.name ?? task.name ?? (task.number ? phone(task.number) : 'No contact');
+  const who = contact?.name ?? task.name ?? (task.number ? (task.displayNumber ?? phone(task.number)) : 'No contact');
 
   return (
     <SwipeRow

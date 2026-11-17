@@ -4,8 +4,27 @@ import { connectAgentEvents, disconnectAgentEvents } from '@/api/events';
 import { USE_BACKEND } from '@/api/http';
 import { connectAgentSocket, disconnectAgentSocket, wakeAgentSocket } from '@/api/socket';
 import { notify } from '@/components/feedback';
+import { useData } from '@/store/data';
 import { SESSION_EXPIRED, useSession } from '@/store/session';
 import { useCall } from '@/telephony/callStore';
+
+/**
+ * A "For Me" callback has come due, as the web's useCallbackAutoDial: the server only says so (and has already
+ * marked it NOTIFIED), so the app places the call itself, in the agent's current campaign, as a CALLBACK call.
+ * The web's own messages when the agent isn't READY or the call can't start. The Callbacks tab is then reloaded,
+ * as the web reloads its list.
+ */
+async function dialDueCallback(phone: string) {
+  const session = useSession.getState();
+  if (session.status !== 'available') {
+    notify('Switch to READY status', 'error', undefined, { title: 'Status Error' });
+    return;
+  }
+  if (!session.agent?.campaignId) return;
+  const res = await useCall.getState().startOutbound({ number: phone, source: 'task', callback: true });
+  if (!res.ok) notify('Unable to start call', 'error', undefined, { title: 'Call Error' });
+  void useData.getState().sync();
+}
 
 /**
  * Keeps the agent's live connections to the backend open while signed in: the socket (api/socket.ts) and the
@@ -30,10 +49,14 @@ export function useAgentSocket() {
       },
       inboundIncoming: (data) => useCall.getState().inboundIncoming(data),
       inboundEnded: (data) => useCall.getState().inboundEnded(data),
+      callbackDue: ({ callback }) => {
+        if (callback?.phone_number) void dialDueCallback(callback.phone_number);
+      },
     });
-    // Why a call failed, as the web's "Call Failed" toast (hooks/useCallEvents.ts)
+    // Why a call failed, as the web's "Call Failed" toast, and its "Callback Reminder" (hooks/useCallEvents.ts)
     connectAgentEvents(token, {
       callFailure: (message) => notify(message, 'error', undefined, { title: 'Call Failed' }),
+      callbackReminder: (message) => notify(message, 'info', undefined, { title: 'Callback Reminder' }),
     });
     const sub = AppState.addEventListener('change', (state) => {
       if (state === 'active') wakeAgentSocket();

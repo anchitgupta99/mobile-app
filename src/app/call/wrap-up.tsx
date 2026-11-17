@@ -1,6 +1,6 @@
 import { router, useLocalSearchParams, useNavigation, useRootNavigationState } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, KeyboardAvoidingView, ScrollView, View } from 'react-native';
+import { ActivityIndicator, KeyboardAvoidingView, Pressable, ScrollView, View } from 'react-native';
 import Animated, { FadeIn, FadeOut, LinearTransition } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { api } from '@/api/client';
@@ -16,7 +16,7 @@ import { notify } from '@/components/feedback';
 import { useStatusSheet } from '@/components/StatusSheet';
 import { ModeBadge } from '@/components/ModeBadge';
 import { usePhoneDisplay } from '@/components/PhoneText';
-import { Button, Field, Icon, IconButton, Pill, T, tap } from '@/components/ui';
+import { Button, Field, Icon, IconButton, Pill, T, tap, Toggle, type IconName } from '@/components/ui';
 import { formatDuration, formatWhen, uid } from '@/domain/format';
 import { findPath, isComplete, isRetryDisposition, pathLabel, type DispositionPath } from '@/domain/dispositions';
 import type { DispositionConfig, DispositionField } from '@/domain/types';
@@ -25,7 +25,7 @@ import { findCampaign } from '@/store/campaigns';
 import { useData } from '@/store/data';
 import { useSession } from '@/store/session';
 import { scheduleAutoCall } from '@/telephony/autoCall';
-import { useCall } from '@/telephony/callStore';
+import { sendableName, useCall } from '@/telephony/callStore';
 import { font, useTheme } from '@/theme';
 import { keyboardBehavior } from '@/components/keyboard';
 
@@ -96,6 +96,43 @@ function DateTimeField({ field, value, onChange }: { field: DispositionField; va
         </View>
       )}
     </View>
+  );
+}
+
+/** One of the web's two callback choices: "For Me" (routes back to this agent) or "Campaign" (any available agent) */
+function RouteChoice({ icon, title, body, on, onPress }: { icon: IconName; title: string; body: string; on: boolean; onPress: () => void }) {
+  const { c } = useTheme();
+  return (
+    <Pressable
+      accessibilityRole="radio"
+      accessibilityState={{ checked: on }}
+      accessibilityLabel={`${title}, ${body}`}
+      onPress={() => {
+        tap();
+        onPress();
+      }}
+      style={({ pressed }) => ({
+        flex: 1,
+        flexDirection: 'row',
+        alignItems: 'flex-start',
+        gap: 8,
+        padding: 12,
+        borderRadius: 10,
+        borderWidth: on ? 2 : 1,
+        borderColor: on ? c.purple : c.line,
+        backgroundColor: pressed ? c.subtle : on ? c.selected : c.surface,
+      })}
+    >
+      <Icon name={icon} size={18} color={on ? c.purple : c.ink2} />
+      <View style={{ flex: 1, gap: 2 }}>
+        <T v="label" color={on ? c.purple : c.ink}>
+          {title}
+        </T>
+        <T v="caption" numberOfLines={1}>
+          {body}
+        </T>
+      </View>
+    </Pressable>
   );
 }
 
@@ -177,6 +214,11 @@ export default function WrapUp() {
   // Which Submit is with the server, and why the server last turned it down (shown above the buttons, as the web's)
   const [saving, setSaving] = useState<'available' | 'break' | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // Backend, as the web's panel: Mark DND, and Schedule Callback with who gets it (For Me / Campaign) and when
+  const [dnd, setDnd] = useState(false);
+  const [scheduleCallback, setScheduleCallback] = useState(false);
+  const [routeToMe, setRouteToMe] = useState(true);
+  const [callbackAt, setCallbackAt] = useState('');
 
   // Nothing leaves a pending wrap-up: hardware back, swipe, or browser back. The store is read
   // live because submit() clears the wrap-up and closes in the same tick.
@@ -239,9 +281,25 @@ export default function WrapUp() {
   const missing = pathFields.filter((f) => f.required && !fields[f.key]?.trim());
   // A campaign without a disposition template has nothing to pick; the call still gets closed
   const noOptions = fromServer && !!remote && remote.dispositions.length === 0;
-  const notesNeeded = !!config.notesRequired || !!chosen?.requiresNotes;
+  // Backend: the template's switches (all on when the list didn't say, as the web) and the deepest outcome
+  // picked so far, which decides a required callback or a do-not-call outcome as on the web
+  const prefs = fromServer ? (config.prefs ?? { callbackEnabled: true, dncEnabled: true, notesEnabled: true, notesRequired: false }) : null;
+  const deepest = path[path.length - 1] ?? null;
+  const notesShown = prefs ? prefs.notesEnabled : true;
+  const notesNeeded = prefs ? prefs.notesRequired : !!config.notesRequired || !!chosen?.requiresNotes;
   const notesMissing = notesNeeded && !notes.trim();
-  const valid = (noOptions || !!chosen) && missing.length === 0 && !notesMissing && !loadingDispositions;
+  // A control the admin turned off carries nothing into the submit, as on the web
+  const sentNotes = notesShown ? notes.trim() : '';
+  const autoDnc = !!prefs && !!deepest?.doNotCall;
+  const showDnc = !!prefs && (prefs.dncEnabled || autoDnc);
+  const dndOn = showDnc && (dnd || autoDnc);
+  const requiresCallback = !!prefs && !!deepest?.requiresCallback;
+  const showCallback = !!prefs && (prefs.callbackEnabled || requiresCallback);
+  const callbackActive = showCallback && (scheduleCallback || requiresCallback);
+  const callbackIncomplete = callbackActive && !callbackAt;
+  const callbackCampaign = findCampaign(call.campaignId)?.name ?? call.campaignName ?? '';
+  const valid =
+    (noOptions || !!chosen) && missing.length === 0 && !notesMissing && !loadingDispositions && !callbackIncomplete;
 
   /** The web's /api/leads/disposition body; a timed-out wrap-up goes in as it stands (isTimeout) */
   const serverBody = (timeout: boolean) => {
@@ -257,21 +315,24 @@ export default function WrapUp() {
           })()
         : raw || undefined;
     return {
-      dispositionId: chosen?.code ?? null,
+      // As the web: the deepest outcome picked. A manual submit is only let through once that is a complete
+      // choice; the timer's auto-submit sends whatever was picked so far, even with its sub-disposition missing
+      dispositionId: (timeout ? deepest : chosen)?.code ?? null,
       isTimeout: timeout,
       path: path.map((d) => d.code),
-      notes: notes.trim(),
+      notes: sentNotes,
       wrapUpTime: Math.round((Date.now() - opened) / 1000),
       call_uuid: call.uuid ?? null,
       agentUuid: null,
       campaignId: call.campaignId,
-      listId: '',
+      // The lead's list and the campaign's prefix from the call's context, as the web sends them
+      listId: call.leadId ? (call.listId ?? '') : '',
       customerNumber: call.number,
-      campaignPrefix: '',
+      campaignPrefix: call.campaignPrefix ?? '',
       fieldValue,
       leadId: call.leadId ?? null,
-      // A number that isn't a lead yet becomes one, as on the web
-      ...(!call.leadId && { leadData: { phone_number: call.number, name: contact?.name ?? '', status: 'IDLE' } }),
+      // A number that isn't a lead yet becomes one, as on the web (never with a name the server masked)
+      ...(!call.leadId && { leadData: { phone_number: call.number, name: sendableName(call.customerName), status: 'IDLE' } }),
     };
   };
 
@@ -284,17 +345,19 @@ export default function WrapUp() {
     }
     setSubmitError(null);
     setSaving(next === 'break' ? 'break' : 'available');
+    // Backend: what goes in on the timer's auto-submit is the outcome picked so far (see serverBody)
+    const sent = fromServer && timeout ? deepest : chosen;
     try {
       await saveDisposition(
         {
           callId: call.id,
-          code: chosen?.code ?? 'none',
-          notes: notes.trim(),
+          code: sent?.code ?? 'none',
+          notes: sentNotes,
           fields,
           submittedAt: new Date().toISOString(),
           ...(fromServer && { server: serverBody(timeout) }),
         },
-        { label: chosen ? pathLabel(path) : timeout ? 'Auto-disposed' : 'No disposition' },
+        { label: sent ? pathLabel(path) : timeout ? 'Auto-disposed' : 'No disposition' },
       );
     } catch (e) {
       // The web's failed Submit: the agent stays on wrap-up with the server's message (else the web's
@@ -308,18 +371,28 @@ export default function WrapUp() {
       });
       return;
     }
+    // The web's "Mark DND": the number onto the campaign's DND list (a do-not-call outcome is left to the server,
+    // which adds it itself). The web sends it before the disposition, after checking the lead's required fields
+    // itself; here the server does that check with the disposition, so the DND goes in only once that is saved.
+    // If it fails the disposition stays saved, as on the web.
+    if (fromServer && dndOn && !autoDnc && call.campaignId) {
+      void api.dnc
+        .add({ phoneNumber: call.number, leadName: sendableName(call.customerName), campaignId: call.campaignId })
+        .catch(() => undefined);
+    }
     const cbField = pathFields.find((f) => f.kind === 'datetime' && f.createsTask);
-    // As the web, once the disposition is saved (also on an auto-submit when a time was set): the callback,
-    // routed back to this agent. Its failure reads as the web's ("Submission Failed"); the disposition stays saved.
-    if (fromServer && cbField && fields[cbField.key] && call.campaignId) {
+    // As the web, once the disposition is saved (also on an auto-submit when a time was set): the callback, for
+    // this agent or for the campaign. Its failure reads as the web's ("Submission Failed"); the disposition stays saved.
+    if (fromServer && callbackActive && callbackAt && call.campaignId) {
       api.callbacks
         .create({
           leadId: call.leadId ?? null,
           campaignId: call.campaignId,
-          name: contact?.name ?? '',
+          name: sendableName(call.customerName),
           phoneNumber: call.number,
-          at: new Date(fields[cbField.key]),
-          remarks: notes.trim(),
+          at: new Date(callbackAt),
+          remarks: sentNotes,
+          routeToAgent: routeToMe,
         })
         // On the server now: the Callbacks tab picks it up from there
         .then(() => useData.getState().sync())
@@ -471,7 +544,7 @@ export default function WrapUp() {
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
           <View style={{ flex: 1 }}>
             <T v="bodyStrong" color={c.onTopbar} numberOfLines={1}>
-              {contact?.name ?? phone(call.number)}
+              {contact?.name || call.customerName || (call.displayNumber ?? phone(call.number))}
             </T>
             <T v="caption" color={c.onTopbar} style={{ opacity: 0.8 }} nums>
               {call.direction === 'inbound' ? 'Inbound' : 'Outbound'} ·{' '}
@@ -484,17 +557,12 @@ export default function WrapUp() {
       </View>
 
       <ScrollView contentContainerStyle={{ padding: 16, gap: 20, paddingBottom: 24 }} keyboardShouldPersistTaps="handled">
-        {contact && (
-          <View style={{ borderWidth: 1, borderColor: c.line, borderRadius: 12, padding: 12, gap: 6, backgroundColor: c.subtle }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <Icon name="lock-outline" size={16} color={c.ink3} />
-              <T v="label" color={c.ink2} style={{ flex: 1 }}>
-                Lead details · locked after the call ended
-              </T>
-            </View>
-            <T v="caption" numberOfLines={2}>
-              {[contact.name, contact.company, contact.email, contact.city].filter(Boolean).join(' · ')}
-            </T>
+        {/* The web's "Mark DND" (in its panel's header): shown when the template allows it, locked on for a
+            do-not-call outcome */}
+        {showDnc && (
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+            <T v="label">Mark DND</T>
+            <Toggle label="Mark DND" value={dndOn} onChange={setDnd} disabled={autoDnc} activeColor={c.errorFg} />
           </View>
         )}
         {loadingDispositions ? (
@@ -533,6 +601,8 @@ export default function WrapUp() {
             path={path}
             showErrors={touched}
             onChange={(p) => {
+              // As the web: leaving an outcome that required the callback turns the switch back off
+              if (path[path.length - 1]?.requiresCallback && !p[p.length - 1]?.requiresCallback) setScheduleCallback(false);
               setPath(p);
               setFields((prev) => {
                 // Keep values for fields that are still on the new path
@@ -554,16 +624,62 @@ export default function WrapUp() {
           </Animated.View>
         ))}
 
-        <Animated.View layout={LinearTransition.duration(duration.base)}>
-          <Field
-            label={notesNeeded ? 'Notes *' : 'Notes'}
-            multiline
-            value={notes}
-            onChangeText={setNotes}
-            placeholder="What happened, what's next"
-            error={touched && notesMissing ? 'A note is required for this disposition' : null}
-          />
-        </Animated.View>
+        {/* Backend: the web's "Additional Note", shown and required as the template says */}
+        {notesShown && (
+          <Animated.View layout={LinearTransition.duration(duration.base)}>
+            <Field
+              label={`${fromServer ? 'Additional Note' : 'Notes'}${notesNeeded ? ' *' : ''}`}
+              multiline
+              value={notes}
+              onChangeText={setNotes}
+              placeholder={fromServer ? 'Add a note...' : "What happened, what's next"}
+              error={
+                touched && notesMissing
+                  ? fromServer
+                    ? 'Additional notes are required'
+                    : 'A note is required for this disposition'
+                  : null
+              }
+            />
+          </Animated.View>
+        )}
+
+        {/* Backend: the web's "Schedule Callback": offered when the template allows it, on and required when the
+            outcome requires a callback; for this agent or for the campaign, at a date and time */}
+        {showCallback && (
+          <Animated.View layout={LinearTransition.duration(duration.base)} style={{ gap: 12 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+              <T v="label">
+                Schedule Callback{requiresCallback ? ' *' : ''}
+              </T>
+              <Toggle label="Schedule Callback" value={callbackActive} onChange={setScheduleCallback} disabled={requiresCallback} />
+            </View>
+            {callbackActive && (
+              <>
+                <View style={{ flexDirection: 'row', gap: 10 }}>
+                  <RouteChoice icon="person" title="For Me" body="Routes back to you" on={routeToMe} onPress={() => setRouteToMe(true)} />
+                  <RouteChoice
+                    icon="groups"
+                    title="Campaign"
+                    body={callbackCampaign || 'Any available agent'}
+                    on={!routeToMe}
+                    onPress={() => setRouteToMe(false)}
+                  />
+                </View>
+                <DateTimeField
+                  field={{ kind: 'datetime', key: 'callback', label: 'Callback date & time', required: true, createsTask: true }}
+                  value={callbackAt}
+                  onChange={setCallbackAt}
+                />
+                {touched && !callbackAt && (
+                  <T v="caption" color={c.errorFg}>
+                    Choose when to call back
+                  </T>
+                )}
+              </>
+            )}
+          </Animated.View>
+        )}
 
         {quality === 'offline' && (
           <View

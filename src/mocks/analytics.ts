@@ -1,7 +1,5 @@
 import type { Analytics, CustomRange, DateRange } from '@/domain/analytics';
 
-const hours = ['09', '10', '11', '12', '13', '14', '15', '16', '17', '18', '19', '20'];
-
 // Today matches the web dashboard reference; other ranges scale it so the numbers stay internally consistent.
 const today: Analytics = {
   inbound: { total: 45, answered: 41, abandoned: 4 },
@@ -14,23 +12,11 @@ const today: Analytics = {
     { label: 'Lunch Break', seconds: 1800 },
     { label: 'Tea Break', seconds: 480 },
   ],
-  hours,
-  hourly: {
-    outbound: [3, 5, 6, 4, 1, 3, 5, 4, 4, 3, 2, 0],
-    inbound: [2, 4, 5, 5, 2, 3, 4, 5, 4, 3, 3, 1],
-    busy: [1, 0, 1, 2, 0, 1, 1, 0, 1, 1, 0, 0],
-    abandoned: [0, 1, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0],
-  },
-  aht: {
-    inbound: [420, 465, 510, 560, 480, 455, 530, 575, 520, 470, 440, 400],
-    outbound: [380, 430, 470, 505, 450, 415, 490, 540, 500, 445, 410, 360],
-    overall: 503,
-  },
+  aht: { overall: 503 },
 };
 
 function scale(a: Analytics, k: number, wobble: number): Analytics {
   const n = (x: number) => Math.round(x * k);
-  const w = (arr: number[]) => arr.map((x, i) => Math.max(0, Math.round(x * k * (1 + (((i * 7 + wobble) % 5) - 2) * 0.08))));
   const inbound = { total: n(a.inbound.total), answered: n(a.inbound.answered), abandoned: 0 };
   inbound.abandoned = inbound.total - inbound.answered;
   const outbound = { total: n(a.outbound.total), answered: n(a.outbound.answered), missed: 0 };
@@ -46,13 +32,7 @@ function scale(a: Analytics, k: number, wobble: number): Analytics {
     shift: { login: call + brk + idle, idle, brk, call },
     callTime,
     breaks,
-    hours,
-    hourly: { outbound: w(a.hourly.outbound), inbound: w(a.hourly.inbound), busy: w(a.hourly.busy), abandoned: w(a.hourly.abandoned) },
-    aht: {
-      inbound: a.aht.inbound.map((x, i) => x + (((i + wobble) % 3) - 1) * 25),
-      outbound: a.aht.outbound.map((x, i) => x + (((i + wobble) % 3) - 1) * 20),
-      overall: a.aht.overall + wobble * 6,
-    },
+    aht: { overall: a.aht.overall + wobble * 6 },
   };
 }
 

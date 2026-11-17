@@ -355,10 +355,3 @@ export const serverConfig: ServerConfig = {
   inboundFallbackSeconds: 5,
   featureFlags: { aiSummary: false, transcripts: false, moveToPstn: false, callingHours: true },
 };
-
-export const reasons = [
-  'Following up on EMI options',
-  'Asking about document checklist',
-  'Wants to reschedule site visit',
-  'Query about sanction letter',
-];

@@ -105,7 +105,7 @@ export function CallCard({
             {callName(call, contact)}
             <T v="body" color={c.ink2}>
               {' '}
-              · {phone(call.number)}
+              · {call.displayNumber ?? phone(call.number)}
             </T>
           </T>
           <T v="caption" nums>
@@ -193,7 +193,7 @@ export function LeadSheet({ call, onClose }: { call: CallRecord | null; onClose:
         ['Id', contact?.id ?? call.leadId ?? '—'],
         ['Name', callName(call, contact)],
         ['Status', leadStatus(contact, openTask)],
-        ['Phone number', phone(call.number)],
+        ['Phone number', call.displayNumber ?? phone(call.number)],
         ['Call UUID', call.uuid ?? call.id],
       ]
     : [];

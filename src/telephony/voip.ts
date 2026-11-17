@@ -12,12 +12,12 @@ import { hangupSip, sendSipDtmf, setSipMuted } from './sip/sipPhone';
  */
 export const voipAdapter: CallAdapter = {
   mode: 'voip',
-  async dial({ number, contactId }) {
+  async dial({ number, contactId, callback }) {
     if (USE_BACKEND) {
       const campaignId = useSession.getState().agent?.campaignId;
       if (!campaignId) throw new ApiError('validation', 'No active campaign. Pick one from the menu first.');
       // The server's call UUID (shown on the call screen, used for hold and the disposition), its lead and campaign
-      const res = await api.liveCalls.manual(number, campaignId);
+      const res = await api.liveCalls.manual(number, campaignId, callback ? 'CALLBACK' : 'MANUAL');
       return { callId: res.callUuid, leadId: res.leadId, campaignId: res.campaignId };
     }
     const res = await api.calls.start({ number, contactId, mode: 'voip', resolvedMode: 'voip' });

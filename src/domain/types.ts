@@ -76,8 +76,13 @@ export type CallRecord = {
   campaignId: string;
   /** Backend: the lead the call was for (X-Lead-ID / manual-call), sent with its disposition */
   leadId?: string | null;
-  /** Backend: from the server's call history, for calls whose lead isn't a contact in the app */
+  /** Backend: the lead's name as the server shows it (masked when the campaign masks it) */
   customerName?: string;
+  /** Backend: the number as the server shows it, masked per the campaign's CRM template; `number` is the real one */
+  displayNumber?: string;
+  /** Backend: the lead's list and the campaign's prefix (call context), sent with the disposition */
+  listId?: string | null;
+  campaignPrefix?: string | null;
   campaignName?: string;
   recordingUrl?: string | null;
   fallbackUsed: boolean;
@@ -100,6 +105,8 @@ export type Task = {
   updatedAt: string;
   /** Backend: a scheduled callback's lead name and campaign, from the server */
   name?: string;
+  /** Backend: the number as the server shows it, masked per campaign; `number` is the real one, for dialing */
+  displayNumber?: string;
   campaignId?: string;
   leadId?: string | null;
 };
@@ -126,16 +133,32 @@ export type Disposition = {
   fields: DispositionField[];
   /** When present the agent must keep drilling down; only a node without children can be submitted */
   children?: Disposition[];
-  /** Backend: this outcome needs a note (dispositions.requires_notes) */
+  /** Demo: this outcome needs a note */
   requiresNotes?: boolean;
+  /** Backend: with children, whether one must be picked (sub_disposition_required); false lets the agent stop here */
+  subRequired?: boolean;
+  /** Backend: picking it makes a callback required (requires_callback) */
+  requiresCallback?: boolean;
+  /** Backend: a do-not-call outcome (is_do_not_call); the server adds the number to DNC itself */
+  doNotCall?: boolean;
+};
+
+/** Backend: the disposition template's switches (disposition_categories), as the web reads them */
+export type DispositionPrefs = {
+  callbackEnabled: boolean;
+  dncEnabled: boolean;
+  notesEnabled: boolean;
+  notesRequired: boolean;
 };
 
 export type DispositionConfig = {
   campaignId: string;
   mandatory: boolean;
   acwSeconds: number;
-  /** Backend: every disposition in this campaign needs a note (additional_notes_required) */
+  /** Demo: every disposition needs a note */
   notesRequired?: boolean;
+  /** Backend: the template's switches for notes, callbacks and DND */
+  prefs?: DispositionPrefs;
   dispositions: Disposition[];
   script: string[];
 };
@@ -175,7 +198,6 @@ export type ScreenPop = {
   contact: Contact | null;
   number: string;
   openTasks: Task[];
-  likelyReason: string;
   lastDisposition: string | null;
   queue: string;
 };

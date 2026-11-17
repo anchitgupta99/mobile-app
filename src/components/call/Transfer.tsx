@@ -13,7 +13,7 @@ import { useCall, type Consult, type ConsultState, type Leg } from '@/telephony/
 import { font, useTheme } from '@/theme';
 import { duration } from '@/theme/motion';
 import { PressableScale } from '../motion/PressableScale';
-import { usePhoneDisplay } from '../PhoneText';
+import { useCallParty } from '../PhoneText';
 import { Sheet } from '../Sheet';
 import { Avatar, Icon, T, tap, type IconName } from '../ui';
 
@@ -88,10 +88,10 @@ function RoundButton({
 export function CallStrip({ onMinimise, title }: { onMinimise: () => void; title?: ReactNode }) {
   const { c } = useTheme();
   const call = useCall((s) => s.call);
-  const phone = usePhoneDisplay();
+  const party = useCallParty();
   const now = useNow(500);
   if (!call) return null;
-  const name = call.pop.contact?.name ?? phone(call.number);
+  const name = party(call, call.pop.contact?.name).name;
   const t = call.connectedAt ? formatDuration((now - call.connectedAt) / 1000) : '0:00';
   return (
     <View
@@ -567,14 +567,14 @@ export function ConsultView({ onMinimise }: { onMinimise: () => void }) {
   const call = useCall((s) => s.call);
   const consult = useCall((s) => s.consult);
   const { cancelConsult, completeTransfer, mergeConsult, setConsultState } = useCall.getState();
-  const phone = usePhoneDisplay();
+  const party = useCallParty();
   const now = useNow(500);
   if (!call || !consult) return null;
 
   const transfer = consult.kind === 'transfer';
   const failed = consult.state === 'busy' || consult.state === 'no-answer' || consult.state === 'declined';
   const answered = consult.state === 'answered';
-  const customer = call.pop.contact?.name ?? phone(call.number);
+  const customer = party(call, call.pop.contact?.name).name;
   const targetTime = consult.answeredAt ? formatDuration((now - consult.answeredAt) / 1000) : null;
 
   const targetStatus = failed ? (

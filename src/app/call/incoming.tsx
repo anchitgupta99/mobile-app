@@ -18,7 +18,7 @@ import { ModeBadge } from '@/components/ModeBadge';
 import { helpText } from '@/domain/helpText';
 import { PressableScale } from '@/components/motion/PressableScale';
 import { feedback } from '@/feedback';
-import { usePhoneDisplay } from '@/components/PhoneText';
+import { useCallParty } from '@/components/PhoneText';
 import { Avatar, Icon, T, tap, type IconName } from '@/components/ui';
 import { useCall } from '@/telephony/callStore';
 import { font, useTheme } from '@/theme';
@@ -96,7 +96,7 @@ export default function Incoming() {
   const call = useCall((s) => s.call);
   const answer = useCall((s) => s.answer);
   const decline = useCall((s) => s.decline);
-  const phone = usePhoneDisplay();
+  const party = useCallParty();
   const reduced = useReducedMotion();
   const pulse = useSharedValue(0);
 
@@ -113,7 +113,9 @@ export default function Incoming() {
 
   if (!call) return <View style={{ flex: 1, backgroundColor: c.callScreen }} />;
   const { pop } = call;
-  const name = pop.contact?.name ?? 'Unknown caller';
+  // The lead's name as the server has it, else the web's "Unknown caller"; the number masked as the campaign says
+  const who = party(call, pop.contact?.name);
+  const name = who.named ? who.name : 'Unknown caller';
 
   return (
     <View style={{ flex: 1, backgroundColor: c.callScreen, paddingTop: insets.top + 16, paddingBottom: insets.bottom + 24 }}>
@@ -153,7 +155,7 @@ export default function Incoming() {
         </T>
         <T v="body" color={c.onCallScreen2} nums>
           {pop.contact ? `${pop.contact.company} · ` : ''}
-          {phone(pop.number)}
+          {who.number}
         </T>
       </View>
 

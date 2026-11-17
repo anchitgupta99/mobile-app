@@ -1,7 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import { ActivityIndicator, Pressable, View } from 'react-native';
 import Animated, { FadeIn, FadeOut, LinearTransition } from 'react-native-reanimated';
-import Svg, { Circle, Line, Polyline } from 'react-native-svg';
 import type { Analytics, CustomRange, DateRange } from '@/domain/analytics';
 import { useAgentAnalytics } from '@/hooks/useAgentAnalytics';
 import { helpText } from '@/domain/helpText';
@@ -241,147 +240,6 @@ function BreakBars({ a }: { a: Analytics }) {
   );
 }
 
-/** Stacked columns per hour. Tap a column to read its values. */
-function HourlyChart({ a }: { a: Analytics }) {
-  const { c } = useTheme();
-  const s = useSeries();
-  const [sel, setSel] = useState<number | null>(null);
-  const keys = [
-    { k: 'outbound', label: 'Outbound', color: s[0] },
-    { k: 'inbound', label: 'Inbound', color: s[1] },
-    { k: 'busy', label: 'Busy', color: s[2] },
-    { k: 'abandoned', label: 'Abandoned', color: s[3] },
-  ] as const;
-  const totals = a.hours.map((_, i) => keys.reduce((t, x) => t + a.hourly[x.k][i], 0));
-  const max = Math.max(...totals, 1);
-  const H = 132;
-  const i = sel ?? totals.indexOf(Math.max(...totals));
-
-  return (
-    <View style={{ gap: 10 }}>
-      <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 8, minHeight: 20 }}>
-        <T v="label" nums>
-          {a.hours[i]}:00
-        </T>
-        <T v="caption" color={c.ink2} nums numberOfLines={1} style={{ flex: 1 }}>
-          {keys.map((x) => `${x.label} ${a.hourly[x.k][i]}`).join(' · ')}
-        </T>
-      </View>
-      <View style={{ flexDirection: 'row', alignItems: 'flex-end', height: H, gap: 4 }}>
-        {a.hours.map((h, idx) => (
-          <Pressable
-            key={h}
-            accessibilityRole="button"
-            accessibilityLabel={`${h}:00, ${totals[idx]} calls`}
-            onPress={() => {
-              tap();
-              setSel(idx);
-            }}
-            style={{ flex: 1, height: H, justifyContent: 'flex-end', opacity: sel === null || sel === idx ? 1 : 0.45 }}
-          >
-            <View style={{ height: (totals[idx] / max) * (H - 4), gap: GAP, flexDirection: 'column-reverse' }}>
-              {keys.map((x, ki) =>
-                a.hourly[x.k][idx] > 0 ? (
-                  <View
-                    key={x.k}
-                    style={{
-                      flex: a.hourly[x.k][idx],
-                      backgroundColor: x.color,
-                      borderTopLeftRadius: keys.slice(ki + 1).every((y) => !a.hourly[y.k][idx]) ? 4 : 0,
-                      borderTopRightRadius: keys.slice(ki + 1).every((y) => !a.hourly[y.k][idx]) ? 4 : 0,
-                    }}
-                  />
-                ) : null,
-              )}
-            </View>
-          </Pressable>
-        ))}
-      </View>
-      <View style={{ height: 1, backgroundColor: c.divider, marginTop: -6 }} />
-      <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-        {a.hours.map((h, idx) => (
-          <T key={h} v="caption" color={c.ink3} nums style={{ flex: 1, textAlign: 'center', fontSize: 10, opacity: idx % 3 === 0 ? 1 : 0 }}>
-            {h}
-          </T>
-        ))}
-      </View>
-      <Legend items={keys.map((x) => ({ label: x.label, value: String(a.hourly[x.k].reduce((t, v) => t + v, 0)), color: x.color }))} />
-    </View>
-  );
-}
-
-function AhtChart({ a }: { a: Analytics }) {
-  const { c } = useTheme();
-  const s = useSeries();
-  const [w, setW] = useState(0);
-  const [sel, setSel] = useState<number | null>(null);
-  const H = 120;
-  const all = [...a.aht.inbound, ...a.aht.outbound];
-  const lo = Math.min(...all) - 30;
-  const hi = Math.max(...all) + 30;
-  const n = a.hours.length;
-  const x = (i: number) => 6 + (i / (n - 1)) * (w - 12);
-  const y = (v: number) => H - 6 - ((v - lo) / (hi - lo)) * (H - 12);
-  const pts = (arr: number[]) => arr.map((v, i) => `${x(i)},${y(v)}`).join(' ');
-  const i = sel ?? n - 1;
-
-  return (
-    <View style={{ gap: 10 }}>
-      <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 8 }}>
-        <T v="label" nums>
-          {a.hours[i]}:00
-        </T>
-        <T v="caption" color={c.ink2} nums>
-          Inbound {hms(a.aht.inbound[i])} · Outbound {hms(a.aht.outbound[i])}
-        </T>
-      </View>
-      <View style={{ height: H }} onLayout={(e) => setW(e.nativeEvent.layout.width)}>
-        {w > 0 && (
-          <Svg width={w} height={H}>
-            {[0.25, 0.5, 0.75].map((f) => (
-              <Line key={f} x1={0} x2={w} y1={H * f} y2={H * f} stroke={c.divider} strokeWidth={1} />
-            ))}
-            <Line x1={x(i)} x2={x(i)} y1={0} y2={H} stroke={c.line} strokeWidth={1} />
-            <Polyline points={pts(a.aht.inbound)} fill="none" stroke={s[0]} strokeWidth={2} strokeLinejoin="round" />
-            <Polyline points={pts(a.aht.outbound)} fill="none" stroke={s[1]} strokeWidth={2} strokeLinejoin="round" />
-            <Circle cx={x(i)} cy={y(a.aht.inbound[i])} r={4.5} fill={s[0]} stroke={c.surface} strokeWidth={2} />
-            <Circle cx={x(i)} cy={y(a.aht.outbound[i])} r={4.5} fill={s[1]} stroke={c.surface} strokeWidth={2} />
-          </Svg>
-        )}
-        <View style={{ ...StyleAbs, flexDirection: 'row' }}>
-          {a.hours.map((h, idx) => (
-            <Pressable
-              key={h}
-              accessibilityRole="button"
-              accessibilityLabel={`${h}:00, inbound ${hms(a.aht.inbound[idx])}, outbound ${hms(a.aht.outbound[idx])}`}
-              onPress={() => setSel(idx)}
-              style={{ flex: 1 }}
-            />
-          ))}
-        </View>
-      </View>
-      <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-        <T v="caption" color={c.ink3} nums>
-          {a.hours[0]}:00
-        </T>
-        <T v="caption" color={c.ink3} nums>
-          {a.hours[n - 1]}:00
-        </T>
-      </View>
-      <Legend
-        items={[
-          { label: 'Inbound avg', value: hms(avg(a.aht.inbound)), color: s[0] },
-          { label: 'Outbound avg', value: hms(avg(a.aht.outbound)), color: s[1] },
-        ]}
-      />
-    </View>
-  );
-}
-
-const avg = (arr: number[]) => arr.reduce((t, v) => t + v, 0) / (arr.length || 1);
-
-const StyleAbs = { position: 'absolute' as const, left: 0, right: 0, top: 0, bottom: 0 };
-
 /** Built per render so "This month" is right after midnight, not frozen at app start. */
 const customRangesNow = (): CustomRange[] => [
   { label: 'Last 7 days', days: 7 },
@@ -396,7 +254,7 @@ function rangeLabel(days: number) {
   return `${f.format(start)} – ${f.format(end)}`;
 }
 
-export function Dashboard({ queue }: { queue: number }) {
+export function Dashboard() {
   const { c } = useTheme();
   const s = useSeries();
   const [range, setRange] = useState<DateRange>('today');
@@ -450,7 +308,6 @@ export function Dashboard({ queue }: { queue: number }) {
       <View>
         <SectionHeader title="At a glance" />
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
-          <Tile icon="groups" label="In queue" value={String(queue)} hint="Waiting now" live tip={helpText.inQueue} />
           <Tile
             icon="call"
             label="Total calls"
@@ -546,17 +403,6 @@ export function Dashboard({ queue }: { queue: number }) {
         <Collapsible title="Break time" summary={hm(a.shift.brk)}>
           <BreakBars a={a} />
         </Collapsible>
-        {/* Per-hour figures only exist in the demo: the server (and the web, whose chart is hardcoded) has none */}
-        {a.hours.length > 0 && (
-          <>
-            <Collapsible title="Hourly call trend" summary={`${a.hours[0]}:00–${a.hours[a.hours.length - 1]}:00`}>
-              <HourlyChart a={a} />
-            </Collapsible>
-            <Collapsible title="Average handling time" summary={hms(a.aht.overall)}>
-              <AhtChart a={a} />
-            </Collapsible>
-          </>
-        )}
       </View>
 
       <Sheet open={pickOpen} onClose={() => setPickOpen(false)} title="Custom date" scroll={false}>

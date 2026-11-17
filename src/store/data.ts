@@ -134,10 +134,15 @@ const empty = {
   calls: [] as CallRecord[],
   tasks: [] as Task[],
   timeline: [] as TimelineEvent[],
-  dispositions: fallbackDispositions,
-  server: fallbackServer,
+  // Against the backend nothing sample is shown before the first sync: the tenant's break types and the
+  // campaign's dispositions come from the server, and until they load the lists stay empty
+  dispositions: USE_BACKEND ? { ...fallbackDispositions, dispositions: [] } : fallbackDispositions,
+  server: USE_BACKEND ? { ...fallbackServer, breakTypes: [] } : fallbackServer,
   lastSyncAt: null as string | null,
 };
+
+/** The server's ids are UUIDs; anything else saved on the phone is a sample from an older build */
+const SERVER_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export const useData = create<DataState>()(
   persist(
@@ -309,6 +314,19 @@ export const useData = create<DataState>()(
       name: 'claritel.data',
       storage,
       partialize: ({ refreshing, syncError, sync, ...rest }) => rest,
+      // v1: older builds saved the sample break types and dispositions before the server's had loaded;
+      // against the backend those are dropped, so a sample break id can never be sent to the server
+      version: 1,
+      migrate: (persisted, version) => {
+        const s = persisted as Partial<DataState> | undefined;
+        if (!s || version >= 1 || !USE_BACKEND) return s as DataState;
+        const breakTypes = (s.server?.breakTypes ?? []).filter((b) => SERVER_ID.test(b.code));
+        return {
+          ...s,
+          server: { ...(s.server ?? empty.server), breakTypes },
+          dispositions: s.dispositions && SERVER_ID.test(s.dispositions.campaignId) ? s.dispositions : empty.dispositions,
+        } as DataState;
+      },
     },
   ),
 );

@@ -14,9 +14,13 @@ export function isRetryDisposition(code: string) {
   return RETRY_CODES.has(code);
 }
 
+/**
+ * A path that can be submitted: it ends on an outcome without children, or (backend) on one whose
+ * sub-disposition isn't required, as the web's disposition panel and the server allow
+ */
 export function isComplete(path: DispositionPath) {
   const last = path[path.length - 1];
-  return !!last && !last.children?.length;
+  return !!last && (!last.children?.length || last.subRequired === false);
 }
 
 /** Every node in the tree with the path that reaches it, depth first */

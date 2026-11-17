@@ -10,6 +10,7 @@ import type {
   DispositionConfig,
   DispositionField,
   DispositionPayload,
+  DispositionPrefs,
   LoginMode,
   NetworkSample,
   ServerConfig,
@@ -18,6 +19,7 @@ import type {
 } from '@/domain/types';
 import type { Analytics } from '@/domain/analytics';
 import { findPath, pathLabel } from '@/domain/dispositions';
+import { findPhoneMaskRule, type PhoneMaskRule } from '@/domain/phoneMask';
 import { agent, buildSeed, campaigns as demoCampaigns, dispositionConfig, serverConfig } from '@/mocks/seed';
 import { ApiError } from './errors';
 import { mobileRequest, USE_BACKEND } from './http';
@@ -98,24 +100,43 @@ type BackendDisposition = {
   disposition_id: string;
   disposition_name: string;
   parent_id: string | null;
-  requires_notes: boolean | null;
-  requires_callback: boolean;
+  requires_callback: boolean | null;
+  sub_disposition_required: boolean | null;
+  is_do_not_call: boolean | null;
   field_type: string | null;
-  callback_enabled: boolean;
-  additional_notes_required: boolean;
+  // The template's switches, the same on every row
+  callback_enabled: boolean | null;
+  dnc_enabled: boolean | null;
+  additional_notes_enabled: boolean | null;
+  additional_notes_required: boolean | null;
 };
+
+/** The template's switches as the web reads them (readPreferences): nullable, and on when unknown */
+function toPrefs(rows: BackendDisposition[]): DispositionPrefs {
+  const row = rows[0];
+  const notesEnabled = row?.additional_notes_enabled ?? true;
+  return {
+    callbackEnabled: row?.callback_enabled ?? true,
+    dncEnabled: row?.dnc_enabled ?? true,
+    notesEnabled,
+    notesRequired: notesEnabled && (row?.additional_notes_required ?? false),
+  };
+}
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * Nests the campaign's dispositions by parent, as the web's disposition panel does. A text or date
- * disposition asks for its value (sent as fieldValue); "requires callback" makes the callback date
- * required, and the template's callback switch offers it on every outcome.
+ * Nests the campaign's dispositions by parent, as the web's disposition panel does (buildTree): one whose parent
+ * isn't in the list sits at the top. A text or date disposition asks for its value (sent as fieldValue). Whether a
+ * sub-disposition must be picked, a callback is required, or it is a do-not-call outcome comes with each one; the
+ * template's switches for notes, callbacks and DND come with the whole list (toPrefs).
  */
 function toDispositionTree(rows: BackendDisposition[]): Disposition[] {
+  const ids = new Set(rows.map((r) => r.disposition_id));
+  const parentOf = (r: BackendDisposition) => (r.parent_id && ids.has(r.parent_id) ? r.parent_id : null);
   const build = (parentId: string | null): Disposition[] =>
     rows
-      .filter((r) => (r.parent_id ?? null) === parentId)
+      .filter((r) => parentOf(r) === parentId)
       .map((r) => {
         const children = build(r.disposition_id);
         const fields: DispositionField[] = [];
@@ -123,20 +144,13 @@ function toDispositionTree(rows: BackendDisposition[]): Disposition[] {
         if (r.field_type === 'date') {
           fields.push({ kind: 'datetime', key: 'value', label: r.disposition_name, required: true, createsTask: false });
         }
-        if (!children.length && (r.requires_callback || r.callback_enabled)) {
-          fields.push({
-            kind: 'datetime',
-            key: 'callback',
-            label: r.requires_callback ? 'Callback date & time' : 'Schedule a callback (optional)',
-            required: !!r.requires_callback,
-            createsTask: true,
-          });
-        }
         return {
           code: r.disposition_id,
           label: r.disposition_name,
           fields,
-          requiresNotes: !!r.requires_notes,
+          subRequired: r.sub_disposition_required ?? true,
+          requiresCallback: r.requires_callback ?? false,
+          doNotCall: r.is_do_not_call ?? false,
           ...(children.length && { children }),
         };
       });
@@ -161,6 +175,28 @@ type BackendCallRow = {
   campaign_name: string | null;
   disposition: { name: string; path: string[]; notes: string } | null;
   leadId: string | null;
+};
+
+/** GET /v1/api/agent/mobile/calls/context (the web's /api/call/call-context) */
+type BackendCallContext = {
+  exists?: boolean;
+  leadId?: string | null;
+  listId?: string | null;
+  prefix?: string | null;
+  groups?: { fields?: { field_key?: string; field_type?: string; validation_rules?: unknown }[] | null }[];
+  values?: Record<string, unknown>;
+};
+
+/** What the app keeps of a call's context */
+export type CallContext = {
+  /** A lead for this number in the campaign */
+  exists: boolean;
+  leadId: string | null;
+  listId: string | null;
+  prefix: string | null;
+  /** The lead's name as the server shows it (masked when the template masks it); empty without a lead */
+  name: string;
+  maskRule: PhoneMaskRule | null;
 };
 
 /** How many days of history the Calls tab loads (the web pages through the same list) */
@@ -196,7 +232,9 @@ function toCallRecord(r: BackendCallRow): CallRecord {
     uuid: r.call_uuid,
     contactId: null,
     customerName: r.customer_name ?? undefined,
-    number: r.customer_mobile || r.dial_number || '',
+    // The real number to call back on, and the number as the server shows it (masked per campaign)
+    number: r.dial_number || r.customer_mobile || '',
+    displayNumber: r.customer_mobile || undefined,
     direction: inbound ? 'inbound' : 'outbound',
     outcome: answered ? 'answered' : inbound ? 'missed' : 'no-answer',
     mode: 'voip',
@@ -216,35 +254,47 @@ function toCallRecord(r: BackendCallRow): CallRecord {
   };
 }
 
-/** GET /v1/api/agent/mobile/callbacks (the web's /api/agent/callbacks): scheduled_callbacks rows */
+/**
+ * GET /v1/api/agent/mobile/callbacks (the web's /api/agent/callbacks): the agent's scheduled callbacks as the web
+ * lists them. The number and name come masked per campaign, with the real number apart for dialing; the time
+ * comes formatted in the tenant's zone, like the call history's.
+ */
 type BackendCallback = {
   id: string;
-  name: string | null;
-  phone_number: string | null;
-  callback_at: string;
-  remarks: string | null;
-  campaign_id: string | null;
   lead_id: string | null;
+  /** As the server shows it (masked when the campaign masks it) */
+  phone_number: string | null;
+  /** The real number, to call back on */
+  dial_number: string | null;
+  customer_name: string | null;
+  campaign_id: string | null;
+  callback_at: string;
   updated_at: string | null;
   created_at: string | null;
+  disposition: { name: string; path: string[]; notes: string } | null;
 };
 
 function toTask(r: BackendCallback): Task {
+  // "05-11-2026 12:22" in the tenant's zone, read like the history's times
+  const dueAt = historyTime(r.callback_at) ?? r.callback_at;
   return {
     id: r.id,
     kind: 'callback',
-    title: r.remarks?.split('\n')[0]?.slice(0, 60) || 'Callback',
+    title: 'Callback',
     contactId: null,
-    name: r.name ?? undefined,
-    number: r.phone_number,
-    dueAt: r.callback_at,
+    // The server's placeholder for a callback without a lead isn't a name
+    name: r.customer_name && r.customer_name !== 'Unknown' ? r.customer_name : undefined,
+    number: r.dial_number || r.phone_number,
+    displayNumber: r.phone_number ?? undefined,
+    dueAt,
     slaDueAt: null,
-    notes: r.remarks ?? '',
+    // The note of the lead's last disposition, which the web shows with the callback
+    notes: r.disposition?.notes ?? '',
     done: false,
     createdFromCallId: null,
     campaignId: r.campaign_id ?? undefined,
     leadId: r.lead_id,
-    updatedAt: r.updated_at ?? r.created_at ?? r.callback_at,
+    updatedAt: r.updated_at ?? r.created_at ?? dueAt,
   };
 }
 
@@ -464,12 +514,13 @@ export const api = {
   /** The webphone's real calls (backend only); the mock `calls` below keeps the demo's history and controls */
   liveCalls: {
     /** The server dials the number and rings this agent's webphone; returns the call's UUID, lead and actual campaign */
-    async manual(number: string, campaignId: string) {
+    async manual(number: string, campaignId: string, type: 'MANUAL' | 'CALLBACK' = 'MANUAL') {
       const res = await mobileRequest<{ callUuid: string; leadId?: string | null; campaign?: { id: string } }>('POST', '/calls/manual', {
         leadNumber: number,
         campaignId,
         mode: 'web',
-        type: 'MANUAL',
+        // CALLBACK: a due "For Me" callback, dialed by the app as the web's browser dials it
+        type,
       });
       // An auto-dial group resolves to one of its campaigns on the server
       return { callUuid: res.callUuid, leadId: res.leadId ?? null, campaignId: res.campaign?.id ?? campaignId };
@@ -517,6 +568,26 @@ export const api = {
     },
     hold(callUuid: string, on: boolean) {
       return mobileRequest('POST', '/calls/hold', { uuid: callUuid, status: on ? 'hold' : 'unhold', timestamp: new Date().toISOString() });
+    },
+    /**
+     * The customer behind a call (the web's /api/call/call-context): the lead's name (masked by the server when
+     * the template masks it), its ids, list and the campaign's prefix, and the phone field's masking rule. It
+     * fails for a campaign without a CRM template; the number is then shown as it is, as on the web.
+     */
+    async context(phone: string, campaignId: string, leadId?: string | null): Promise<CallContext> {
+      const q = `phone=${encodeURIComponent(phone)}&campaignId=${encodeURIComponent(campaignId)}${
+        leadId ? `&leadId=${encodeURIComponent(leadId)}` : ''
+      }`;
+      const res = await mobileRequest<BackendCallContext>('GET', `/calls/context?${q}`);
+      const name = res.values?.name;
+      return {
+        exists: res.exists === true,
+        leadId: res.leadId ?? null,
+        listId: res.listId ?? null,
+        prefix: res.prefix ?? null,
+        name: typeof name === 'string' ? name.trim() : '',
+        maskRule: findPhoneMaskRule(res.groups),
+      };
     },
     /** The webphone's call is over: the server moves the agent to the disposition step */
     ended() {
@@ -609,7 +680,7 @@ export const api = {
           `/dispositions?campaignId=${encodeURIComponent(campaignId)}`,
         );
         const rows = res.data ?? [];
-        return { ...empty, dispositions: toDispositionTree(rows), notesRequired: !!rows[0]?.additional_notes_required };
+        return { ...empty, dispositions: toDispositionTree(rows), prefs: toPrefs(rows) };
       }
       // One tree for every campaign in the mock; the id is echoed so the app can tell which campaign it holds
       return request(() => ({ ...dispositionConfig, campaignId }));
@@ -618,8 +689,7 @@ export const api = {
 
   /**
    * The Home dashboard for a date range (YYYY-MM-DD, the tenant's days), from the same two endpoints as the
-   * web's agent analytics. The server has no per-hour figures, so those charts stay empty; AHT is the
-   * handling time (talk, hold and wrap) over the answered calls.
+   * web's agent analytics. AHT is the handling time (talk, hold and wrap) over the answered calls.
    */
   analytics: {
     async get(fromDate: string, toDate: string): Promise<Analytics> {
@@ -647,20 +717,25 @@ export const api = {
         },
         callTime,
         breaks: (shift.break_time.break_details ?? []).map((b) => ({ label: b.name, seconds: seconds(b.duration) })),
-        hours: [],
-        hourly: { outbound: [], inbound: [], busy: [], abandoned: [] },
-        aht: {
-          inbound: [],
-          outbound: [],
-          overall: answered ? Math.round((callTime.talk + callTime.hold + callTime.wrap) / answered) : 0,
-        },
+        aht: { overall: answered ? Math.round((callTime.talk + callTime.hold + callTime.wrap) / answered) : 0 },
       };
     },
   },
 
-  /** A callback scheduled from the disposition, like the web's (routed back to this agent) */
+  /**
+   * A callback scheduled from the disposition, like the web's: routeToAgent true routes it back to this agent
+   * ("For Me"), false gives it to any available agent in the campaign ("Campaign")
+   */
   callbacks: {
-    create(body: { leadId: string | null; campaignId: string; name: string; phoneNumber: string; at: Date; remarks: string }) {
+    create(body: {
+      leadId: string | null;
+      campaignId: string;
+      name: string;
+      phoneNumber: string;
+      at: Date;
+      remarks: string;
+      routeToAgent: boolean;
+    }) {
       const pad = (n: number) => String(n).padStart(2, '0');
       const { at } = body;
       return mobileRequest('POST', '/callbacks', {
@@ -671,7 +746,20 @@ export const api = {
         date: `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`,
         time: `${pad(at.getHours())}:${pad(at.getMinutes())}`,
         remarks: body.remarks || undefined,
-        routeToAgent: true,
+        routeToAgent: body.routeToAgent,
+      });
+    },
+  },
+
+  /** "Mark DND" on the disposition: the number onto the campaign's do-not-call list for good, as the web sends it */
+  dnc: {
+    add(body: { phoneNumber: string; leadName: string; campaignId: string }) {
+      return mobileRequest('POST', '/dnc', {
+        phone_number: body.phoneNumber,
+        lead_name: body.leadName,
+        is_permanent: true,
+        expiry_days: 0,
+        campaign_id: body.campaignId,
       });
     },
   },
@@ -739,7 +827,7 @@ export const api = {
         await mobileRequest('PUT', `/callbacks/${task.id}`, {
           date: `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`,
           time: `${pad(at.getHours())}:${pad(at.getMinutes())}`,
-          remarks: task.notes || undefined,
+          // No remarks, as the web's reschedule sends none: the callback's own stay as they are on the server
         });
         return task;
       }

@@ -1,6 +1,7 @@
 import type { CallMode } from '@/domain/types';
 
-export type DialInput = { number: string; contactId: string | null };
+/** callback: a due "For Me" callback, which the server is told apart from a manual dial (type CALLBACK) */
+export type DialInput = { number: string; contactId: string | null; callback?: boolean };
 
 export interface CallAdapter {
   readonly mode: CallMode;

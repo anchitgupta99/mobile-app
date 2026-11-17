@@ -1,7 +1,6 @@
 import { router } from 'expo-router';
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { RefreshControl, ScrollView, View } from 'react-native';
-import { realtime } from '@/api/realtime';
 import { useNetwork } from '@/api/network';
 import { notify } from '@/components/feedback';
 import { Dashboard } from '@/components/Dashboard';
@@ -19,23 +18,6 @@ function greeting(d = new Date()) {
   return h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
 }
 
-// Last count the server pushed. Kept outside the component so the tile shows it again after a tab
-// switch instead of resetting; a realtime push is the only thing that ever changes it.
-let lastWaiting = 0;
-
-function useQueue() {
-  const [waiting, setWaiting] = useState(lastWaiting);
-  useEffect(
-    () =>
-      realtime.on('queue.updated', ({ waiting: w }) => {
-        lastWaiting = w;
-        setWaiting(w);
-      }),
-    [],
-  );
-  return waiting;
-}
-
 export default function Home() {
   const { c } = useTheme();
   const agent = useSession((s) => s.agent);
@@ -43,7 +25,6 @@ export default function Home() {
   const { refreshing, onRefresh } = useRefresh();
   const pending = useOutbox((s) => s.items.length);
   const quality = useNetwork((s) => s.quality);
-  const waiting = useQueue();
   const { callTask, snooze } = useTaskActions();
 
   const next = useMemo(
@@ -64,9 +45,12 @@ export default function Home() {
         <T v="title" accessibilityRole="header">
           {greeting()}, {agent?.name.split(' ')[0]}
         </T>
-        <T v="body" color={c.ink2}>
-          {agent?.campaignName} · {agent?.team}
-        </T>
+        {/* The campaign the agent is working; the server has no team for an agent */}
+        {!!agent?.campaignName && (
+          <T v="body" color={c.ink2}>
+            {agent.campaignName}
+          </T>
+        )}
       </View>
 
       {pending > 0 && (
@@ -80,7 +64,7 @@ export default function Home() {
         </Card>
       )}
 
-      <Dashboard queue={waiting} />
+      <Dashboard />
 
       <View>
         <SectionHeader title="Next callbacks" action="See all" onAction={() => router.push('/callbacks')} />

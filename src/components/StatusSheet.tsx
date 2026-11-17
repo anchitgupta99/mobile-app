@@ -1,4 +1,4 @@
-import { Pressable, View } from 'react-native';
+import { ActivityIndicator, Pressable, View } from 'react-native';
 import { create } from 'zustand';
 import { USE_BACKEND } from '@/api/http';
 import type { AgentStatus, BreakType } from '@/domain/types';
@@ -7,7 +7,7 @@ import { useData } from '@/store/data';
 import { useSession } from '@/store/session';
 import { useTheme } from '@/theme';
 import { Sheet } from './Sheet';
-import { Icon, SectionHeader, T, tap, type IconName } from './ui';
+import { Button, Icon, SectionHeader, T, tap, type IconName } from './ui';
 
 type SheetState = { open: boolean; breakOnly: boolean; show: (breakOnly?: boolean) => void; hide: () => void };
 
@@ -19,7 +19,8 @@ export const useStatusSheet = create<SheetState>((set) => ({
 }));
 
 export function useBreakTypes(): BreakType[] {
-  return useData((s) => s.server.breakTypes) ?? serverConfig.breakTypes;
+  // Against the backend only the tenant's own break types; never the samples
+  return useData((s) => s.server.breakTypes) ?? (USE_BACKEND ? [] : serverConfig.breakTypes);
 }
 
 export function useStatusLabel() {
@@ -108,6 +109,7 @@ export function StatusSheet() {
   const breakCode = useSession((s) => s.breakCode);
   const setStatus = useSession((s) => s.setStatus);
   const types = useBreakTypes();
+  const refreshing = useData((s) => s.refreshing);
 
   const pick = (s: AgentStatus, code?: string) => {
     setStatus(s, { breakCode: code ?? null });
@@ -129,6 +131,21 @@ export function StatusSheet() {
         <SectionHeader title="Break" />
       </View>
       <View style={{ gap: 8 }}>
+        {/* None loaded yet (or none set up): the web's "No breaks found", with a way to load them again */}
+        {types.length === 0 && (
+          <View style={{ alignItems: 'center', gap: 10, paddingVertical: 16 }}>
+            {refreshing ? (
+              <ActivityIndicator color={c.purple} />
+            ) : (
+              <>
+                <T v="caption" color={c.ink2}>
+                  No breaks found
+                </T>
+                <Button label="Try again" icon="refresh" variant="outline" size="sm" onPress={() => void useData.getState().sync()} />
+              </>
+            )}
+          </View>
+        )}
         {types.map((b) => (
           <Option
             key={b.code}

@@ -3,7 +3,6 @@
  * Kept in one place so product can review and edit the wording without touching screens.
  */
 export const helpText = {
-  inQueue: { title: 'In queue', text: 'Customers waiting for an agent in your campaign right now. Updates live.' },
   totalCalls: { title: 'Total calls', text: 'Inbound and outbound calls you handled in the selected period.' },
   talkTime: { title: 'Talk time', text: 'Time spent connected to customers. Login is the total time you were logged in.' },
   aht: {

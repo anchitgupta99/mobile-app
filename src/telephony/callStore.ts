@@ -10,7 +10,6 @@ import { uid } from '@/domain/format';
 import { contactById, findContactByNumber, useData } from '@/store/data';
 import { useSession } from '@/store/session';
 import { useSettings, type AudioRoute } from '@/store/settings';
-import { reasons } from '@/mocks/seed';
 import { findCampaign } from '@/store/campaigns';
 import type { CallAdapter } from './adapter';
 import { bridgeAdapter } from './bridge';
@@ -21,6 +20,7 @@ import { nativeCall } from './nativeCall';
 import { setCallAudioRoute, startCallAudio, stopCallAudio } from './sip/audioRoute';
 import { setSipCallHandlers, type IncomingSipCall } from './sip/sipPhone';
 import type { InboundEnded, InboundRing } from '@/api/socket';
+import { MASK_CHAR, maskPhoneForDisplay, maskPhoneFully, type PhoneMaskRule } from '@/domain/phoneMask';
 
 export type DialSource = 'keypad' | 'contact' | 'history' | 'task';
 
@@ -67,6 +67,14 @@ export type ActiveCall = {
   leadId?: string | null;
   /** Backend: inbound accept/reject needs the agent leg's UUID too */
   agentCallUuid?: string | null;
+  /** Backend: the customer as the server shows them (call context): the lead's name and the number, masked per campaign */
+  customerName?: string;
+  displayNumber?: string;
+  /** Backend: the lead's list and the campaign's prefix (call context), sent with the disposition */
+  listId?: string | null;
+  campaignPrefix?: string | null;
+  /** Backend: the campaign the context was asked for, so it's asked again only when that changes */
+  contextCampaign?: string;
 };
 
 export type DialMode = 'Manual' | 'Auto' | 'Inbound';
@@ -123,6 +131,8 @@ type CallStore = {
     taskId?: string | null;
     mode?: CallMode;
     dialMode?: DialMode;
+    /** Backend: a due "For Me" callback the server asked the app to dial (the web's type CALLBACK) */
+    callback?: boolean;
   }) => Promise<DialResult>;
   receiveIncoming: (pop: ScreenPop, mode: CallMode, fallback: boolean) => void;
   answer: () => Promise<void>;
@@ -208,15 +218,40 @@ function newCallUuid() {
   return `${hex(8)}-${hex(4)}-4${hex(3)}-${variant}${hex(3)}-${hex(12)}`;
 }
 
+/** The app's sample contacts are the demo's only: against the backend the caller is who the server says (call context) */
+function sampleContact(number: string, contactId?: string | null) {
+  if (USE_BACKEND) return null;
+  return contactById(contactId) ?? findContactByNumber(number);
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Each campaign's phone masking rule once the server has said it (null: not masked), as the web keeps it */
+const maskRules = new Map<string, PhoneMaskRule | null>();
+
+/** A name the server masked isn't sent back to it as the lead's or callback's name */
+export function sendableName(name: string | null | undefined) {
+  return name && !name.includes(MASK_CHAR) ? name : '';
+}
+
+/**
+ * The web's maskCustomerParticipantName: in the conference's member list the customer is named by their number,
+ * so when the campaign masks the number that row shows the masked one too
+ */
+function customerLegName(name: string, role: string | null | undefined, call: ActiveCall | null) {
+  const masked = call?.displayNumber && call.displayNumber !== call.number ? call.displayNumber : undefined;
+  if (!masked || role !== 'customer') return name;
+  return /^[+\d\s()-]+$/.test(String(name ?? '').trim()) ? masked : name;
+}
+
 export function buildPop(number: string, contactId?: string | null): ScreenPop {
-  const contact = contactById(contactId) ?? findContactByNumber(number);
+  const contact = sampleContact(number, contactId);
   const openTasks = contact ? useData.getState().tasks.filter((t) => t.contactId === contact.id && !t.done) : [];
   return {
     contact,
     number,
     openTasks,
     lastDisposition: contact?.lastDisposition ?? null,
-    likelyReason: openTasks[0]?.title ?? reasons[Math.floor(Math.random() * reasons.length)],
     queue: useSession.getState().agent?.campaignName ?? 'Default queue',
   };
 }
@@ -225,6 +260,77 @@ export const useCall = create<CallStore>((set, get) => {
   const patch = (p: Partial<ActiveCall>) => {
     const c = get().call;
     if (c) set({ call: { ...c, ...p } });
+  };
+
+  /**
+   * Backend: who the customer is, as the web's call page asks it (call-context, also its usePhoneMask): the
+   * lead's name, ids, list and prefix, and the campaign's masking rule for the number. Until the rule is known
+   * the number is fully masked; without a usable campaign, or for a campaign without a CRM template, it is shown
+   * as it is. An answer that comes after the call ended goes onto its record, which the wrap-up reads.
+   */
+  const loadContext = (id: string) => {
+    if (!USE_BACKEND) return;
+    const c = get().call;
+    if (!c || c.id !== id || !c.number) return;
+    const campaignId = c.campaignId ?? useSession.getState().agent?.campaignId;
+    if (!campaignId || !UUID_RE.test(campaignId)) {
+      if (!c.displayNumber) patch({ displayNumber: c.number });
+      return;
+    }
+    if (c.contextCampaign === campaignId) return;
+    const known = maskRules.get(campaignId);
+    patch({
+      contextCampaign: campaignId,
+      displayNumber: maskRules.has(campaignId) ? maskPhoneForDisplay(c.number, known) : maskPhoneFully(c.number),
+    });
+    const apply = (p: Partial<ActiveCall>) => {
+      const cur = get().call;
+      if (cur?.id === id) {
+        // A newer context (the call's campaign changed meanwhile) wins
+        if (cur.contextCampaign === campaignId) patch(p);
+        return;
+      }
+      const { displayNumber, customerName, leadId, listId, campaignPrefix } = p;
+      useData.setState((s) => ({
+        calls: s.calls.map((r) =>
+          r.id === id
+            ? {
+                ...r,
+                ...(displayNumber !== undefined && { displayNumber }),
+                ...(customerName !== undefined && { customerName }),
+                ...(leadId && !r.leadId ? { leadId } : {}),
+                ...(listId !== undefined && { listId }),
+                ...(campaignPrefix !== undefined && { campaignPrefix }),
+              }
+            : r,
+        ),
+        // The missed-call reminder made for it shows the same name and number
+        tasks: s.tasks.map((t) =>
+          t.createdFromCallId === id && t.kind === 'missed'
+            ? {
+                ...t,
+                ...(displayNumber !== undefined && { displayNumber }),
+                ...(customerName !== undefined && { name: customerName }),
+              }
+            : t,
+        ),
+      }));
+    };
+    api.liveCalls
+      .context(c.number, campaignId, c.leadId)
+      .then((ctx) => {
+        maskRules.set(campaignId, ctx.maskRule);
+        const cur = get().call;
+        apply({
+          displayNumber: maskPhoneForDisplay(c.number, ctx.maskRule),
+          customerName: ctx.name || undefined,
+          leadId: (cur?.id === id ? cur.leadId : null) ?? ctx.leadId,
+          listId: ctx.listId,
+          campaignPrefix: ctx.prefix,
+        });
+      })
+      // As the web: the last rule known for this campaign, else the number as it is
+      .catch(() => apply({ displayNumber: maskPhoneForDisplay(c.number, maskRules.get(campaignId) ?? null) }));
   };
 
   const startQuality = () => {
@@ -295,7 +401,7 @@ export const useCall = create<CallStore>((set, get) => {
     const inbound = type === 'inbound' || info.transfer || info.conference;
     const live = !info.acceptReject && (inbound || type === 'predictive');
     const number = info.customerNumber ?? '';
-    const contact = findContactByNumber(number);
+    const contact = sampleContact(number);
     const meta = callMeta(inbound ? 'Inbound' : 'Auto');
     const id = uid('cl');
     set({
@@ -331,6 +437,7 @@ export const useCall = create<CallStore>((set, get) => {
         agentCallUuid: info.agentCallUuid,
       },
     });
+    loadContext(id);
     if (live) {
       nativeCall.reportConnected(id);
       startQuality();
@@ -380,7 +487,7 @@ export const useCall = create<CallStore>((set, get) => {
             .filter((p) => p.role !== 'primary_agent')
             .map((p) => ({
               id: String(p.memberId),
-              name: p.name || p.roleLabel,
+              name: customerLegName(p.name, p.role, get().call) || p.roleLabel,
               role: p.roleLabel,
               kind: p.role === 'customer' ? 'customer' : p.role === 'conference_agent' ? 'agent' : 'external',
               muted: !!p.muted,
@@ -461,6 +568,10 @@ export const useCall = create<CallStore>((set, get) => {
       hasRecording: outcome === 'answered',
       campaignId: c.campaignId ?? useSession.getState().agent?.campaignId ?? useData.getState().dispositions.campaignId,
       leadId: c.leadId ?? null,
+      customerName: c.customerName,
+      displayNumber: c.displayNumber,
+      listId: c.listId,
+      campaignPrefix: c.campaignPrefix,
       fallbackUsed: c.fallback,
       updatedAt: new Date().toISOString(),
     };
@@ -475,10 +586,13 @@ export const useCall = create<CallStore>((set, get) => {
       kind: 'missed',
       title: 'Call back missed call',
       contactId: c.contactId,
+      // The real number to call back on; shown as the campaign's masking says, like the call itself
       number: c.number,
+      displayNumber: c.displayNumber,
+      name: c.customerName,
       dueAt: new Date(now).toISOString(),
       slaDueAt: new Date(now + 2 * 3600000).toISOString(),
-      notes: c.pop.likelyReason ? `Likely reason: ${c.pop.likelyReason}` : '',
+      notes: '',
       done: false,
       createdFromCallId: c.id,
       updatedAt: new Date(now).toISOString(),
@@ -542,7 +656,7 @@ export const useCall = create<CallStore>((set, get) => {
         const conf = get().conference;
         const customer: Leg = {
           id: 'customer',
-          name: c.pop.contact?.name ?? c.number,
+          name: c.pop.contact?.name ?? c.customerName ?? c.displayNumber ?? c.number,
           role: 'Customer',
           kind: 'customer',
           muted: false,
@@ -599,13 +713,13 @@ export const useCall = create<CallStore>((set, get) => {
 
     setNote: (callId, text) => set((s) => ({ notes: { ...s.notes, [callId]: text } })),
 
-    startOutbound: async ({ number, contactId = null, source, taskId = null, mode, dialMode = 'Manual' }) => {
+    startOutbound: async ({ number, contactId = null, source, taskId = null, mode, dialMode = 'Manual', callback = false }) => {
       if (get().call) return { ok: false, title: 'Already on a call', message: 'End the current call first.' };
       const wrap = get().wrapUpCallId;
       if (wrap) {
         return { ok: false, title: 'Finish wrap-up first', message: 'Your last call needs a disposition before the next one.' };
       }
-      const contact = contactById(contactId) ?? findContactByNumber(number);
+      const contact = sampleContact(number, contactId);
       const data = useData.getState();
       // Against the backend the server decides, as for the web: DNC and the campaign's own calling hours,
       // days and dates. The app's fixed 9:00–21:00 check is for the demo's mock contacts only.
@@ -644,6 +758,8 @@ export const useCall = create<CallStore>((set, get) => {
           ...callMeta(dialMode),
         },
       });
+      // The agent's campaign, as the web's call page asks it; asked again below if the server dials in another
+      loadContext(id);
 
       let resolved: CallMode;
       if (USE_BACKEND) resolved = 'voip';
@@ -660,7 +776,7 @@ export const useCall = create<CallStore>((set, get) => {
       patch({ mode: resolved, state: 'dialing', ...(USE_BACKEND && { dialPending: true }) });
       let dialed: Awaited<ReturnType<CallAdapter['dial']>>;
       try {
-        dialed = await adapterFor(resolved).dial({ number, contactId: contact?.id ?? null });
+        dialed = await adapterFor(resolved).dial({ number, contactId: contact?.id ?? null, callback });
         if (get().call?.id === id) patch({ dialPending: false });
       } catch (e) {
         const cur = get().call;
@@ -700,6 +816,8 @@ export const useCall = create<CallStore>((set, get) => {
             campaignId: dialed.campaignId ?? current.campaignId,
             ...(current.state === 'dialing' && { state: 'ringing' as const }),
           });
+          // An auto-dial group resolves to one of its campaigns: its own rules and lead
+          loadContext(id);
           connectWhenAnswered(id);
         }
         return { ok: true };

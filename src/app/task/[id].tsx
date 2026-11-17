@@ -81,7 +81,8 @@ export default function TaskPreview() {
                   {contact.company} · {contact.city}
                 </T>
               )}
-              {number && <PhoneText number={number} v="caption" />}
+              {/* As the server shows it (masked per campaign); Call dials the real number */}
+              {number && <PhoneText number={contact ? number : (task.displayNumber ?? number)} v="caption" />}
             </View>
           </View>
           <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap' }}>

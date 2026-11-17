@@ -61,9 +61,11 @@ export default function Profile() {
           <T v="h2" style={{ marginTop: 8 }}>
             {agent.name}
           </T>
-          <T v="body" color={c.ink2}>
-            {agent.team}
-          </T>
+          {!!agent.team && (
+            <T v="body" color={c.ink2}>
+              {agent.team}
+            </T>
+          )}
         </Card>
 
         {editing ? (

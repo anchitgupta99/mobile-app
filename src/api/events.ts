@@ -9,7 +9,33 @@ import { API_URL, MOBILE_PREFIX } from './http';
 type EventHandlers = {
   /** A call failed: the web's friendly text for the server's hang-up cause */
   callFailure: (message: string) => void;
+  /** A "For Me" callback is coming up: the web's "Callback Reminder" text */
+  callbackReminder: (message: string) => void;
 };
+
+type CallbackReminder = { name?: string | null; phone_number?: string; callback_at?: string };
+
+/**
+ * The web's "Callback Reminder" message (hooks/useCallEvents.ts), worked out the same way: the callback's time is
+ * the tenant's wall-clock time kept as if it were UTC, so it is shown from its UTC fields and the minutes left
+ * are counted with the web's fixed 5:30 offset.
+ */
+export function callbackReminderText(cb: CallbackReminder): string | null {
+  const dt = new Date(cb.callback_at ?? '');
+  if (Number.isNaN(dt.getTime())) return null;
+  const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+  const minutesLater = Math.max(0, Math.ceil((dt.getTime() - IST_OFFSET_MS - Date.now()) / 60_000));
+  let timeLabel: string;
+  try {
+    timeLabel = dt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'UTC' });
+  } catch {
+    // A phone without that locale data: the same 12-hour time by hand
+    const h = dt.getUTCHours();
+    timeLabel = `${String(h % 12 || 12).padStart(2, '0')}:${String(dt.getUTCMinutes()).padStart(2, '0')} ${h < 12 ? 'am' : 'pm'}`;
+  }
+  const who = cb.name || cb.phone_number;
+  return `Callback with ${who} is scheduled at ${timeLabel} (${minutesLater} min later)`;
+}
 
 let stream: EventSource | null = null;
 
@@ -53,10 +79,16 @@ export function connectAgentEvents(token: string, handlers: EventHandlers) {
   s.addEventListener('open', () => log('connected'));
   s.addEventListener('error', (e) => log('error', 'message' in e ? e.message : e.type));
   s.addEventListener('message', (e) => {
-    let data: { type?: string; payload?: { hangup_cause?: unknown } } | null = null;
+    let data: { type?: string; payload?: { hangup_cause?: unknown } & CallbackReminder } | null = null;
     try {
       data = e.data ? JSON.parse(e.data) : null;
     } catch {
+      return;
+    }
+    if (data?.type === 'CALLBACK_REMINDER' && data.payload) {
+      const text = callbackReminderText(data.payload);
+      log('callback reminder', data.payload.callback_at);
+      if (text) handlers.callbackReminder(text);
       return;
     }
     if (data?.type !== 'CALL_FAILURE') return;

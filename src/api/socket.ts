@@ -21,7 +21,15 @@ type SocketHandlers = {
   inboundIncoming: (data: InboundRing) => void;
   /** That ring is over (the web's inbound:ended): timeout, customer_gone, preempted, connected, … */
   inboundEnded: (data: InboundEnded) => void;
+  /**
+   * A "For Me" callback is due and the agent is READY (the web's callback_notification). The server has marked
+   * it NOTIFIED and won't dial it: from here on only the app places the call, as the web's browser does.
+   */
+  callbackDue: (data: CallbackDue) => void;
 };
+
+/** The scheduled_callbacks row the server sends with callback_notification; phone_number is the real number to dial */
+export type CallbackDue = { message?: string; callback?: { id?: string; phone_number?: string | null; name?: string | null } };
 
 export type InboundRing = { agentCallUuid?: string; ringTimeoutSec?: number };
 export type InboundEnded = { agentCallUuid?: string; reason?: string };
@@ -92,6 +100,11 @@ export function connectAgentSocket(token: string, handlers: SocketHandlers) {
   s.on('inbound:ended', (data: InboundEnded) => {
     log('inbound:ended', data);
     handlers.inboundEnded(data ?? {});
+  });
+  // A due "For Me" callback, as the web (socket/appSocket.ts → hooks/useCallbackAutoDial.ts): the app dials it
+  s.on('callback_notification', (data: CallbackDue) => {
+    log('callback_notification', data?.callback?.id);
+    handlers.callbackDue(data ?? {});
   });
   // Calls reach the app as SIP calls to its webphone (see telephony/sip); these are logged for debugging
   for (const event of ['call-event', 'call_status_update', 'call:answered']) {
