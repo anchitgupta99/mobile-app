@@ -15,15 +15,11 @@ export const helpText = {
   },
   abandoned: { title: 'Abandoned', text: 'Inbound callers who hung up before an agent answered.' },
 
-  callMode: {
-    title: 'Data call vs phone line',
-    text: 'Data call uses the internet (WebRTC) and rings in the app. Phone line calls your mobile number and connects you through the regular network. The app picks phone line when your internet is too weak.',
-  },
   campaign: { title: 'Campaign', text: 'The campaign this call belongs to. Its disposition list and script are used in wrap-up.' },
   list: { title: 'List', text: 'The lead list inside the campaign that this number came from.' },
-  dialMode: {
-    title: 'Dial mode',
-    text: 'Manual: you dialed. Auto: placed by Auto-call after your last wrap-up. Inbound: the customer called in.',
+  callType: {
+    title: 'Call type',
+    text: 'How this call reached you: Manual (you dialed), Inbound, Predictive, Progressive, Preview, Callback, Transfer or Conference.',
   },
   callUuid: { title: 'Call UUID', text: 'Unique ID for this call. Share it with support or a supervisor to find the recording and logs.' },
 

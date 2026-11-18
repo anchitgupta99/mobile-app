@@ -1,9 +1,8 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { Platform } from 'react-native';
 import { api } from '@/api/client';
 import { ApiError } from '@/api/errors';
-import { setAuthToken, setSessionExpiredHandler, USE_BACKEND } from '@/api/http';
+import { setAuthToken, setSessionExpiredHandler } from '@/api/http';
 import type { Agent, AgentStatus, Campaign, LoginMode } from '@/domain/types';
 import { setCampaignError, useCampaigns } from './campaigns';
 import { useData } from './data';
@@ -14,7 +13,6 @@ type SessionState = {
   hydrated: boolean;
   token: string | null;
   agent: Agent | null;
-  deviceId: string | null;
   loginMode: LoginMode;
   /** Passed the "Ready to go live?" checks for this login */
   live: boolean;
@@ -42,16 +40,10 @@ type SessionState = {
 };
 
 async function afterLogin(set: (p: Partial<SessionState>) => void, token: string, agent: Agent, loginMode: LoginMode) {
-  const { deviceId } = await api.devices.register({
-    platform: Platform.OS,
-    fcmToken: `fcm_${Math.random().toString(36).slice(2)}`,
-    voipToken: Platform.OS === 'ios' ? `voip_${Math.random().toString(36).slice(2)}` : null,
-  });
   setAuthToken(token);
   set({
     token,
     agent,
-    deviceId,
     locked: false,
     lastActiveAt: Date.now(),
     loginMode,
@@ -69,7 +61,6 @@ export const useSession = create<SessionState>()(
       hydrated: false,
       token: null,
       agent: null,
-      deviceId: null,
       loginMode: 'webrtc',
       live: false,
       locked: false,
@@ -89,7 +80,7 @@ export const useSession = create<SessionState>()(
         if (__DEV__) console.log('[Campaign] list', items.map((c) => c.name), 'default', defaultId);
         useCampaigns.setState({ list: items, allowSelection });
         const a = get().agent;
-        if (!USE_BACKEND || !a || get().token !== token) return;
+        if (!a || get().token !== token) return;
         // Same order as the web: the campaign already in use, then the agent's default, then the first one
         const pick = items.find((c) => c.id === a.campaignId) ?? items.find((c) => c.id === defaultId) ?? items[0];
         if (!pick) {
@@ -106,15 +97,10 @@ export const useSession = create<SessionState>()(
       },
       goLive: async () => {
         const campaignId = get().agent?.campaignId;
-        if (USE_BACKEND) {
-          if (!campaignId) throw new ApiError('validation', 'No active campaign is assigned to you. Please contact your admin.');
-          await api.agents.goOnline(campaignId);
-          // Already online on the server: nothing to queue
-          set({ live: true, status: 'available', breakCode: null, statusSince: new Date().toISOString() });
-          return;
-        }
-        set({ live: true });
-        get().setStatus('available');
+        if (!campaignId) throw new ApiError('validation', 'No active campaign is assigned to you. Please contact your admin.');
+        await api.agents.goOnline(campaignId);
+        // Already online on the server: nothing to queue
+        set({ live: true, status: 'available', breakCode: null, statusSince: new Date().toISOString() });
       },
       setAutoCall: async (on) => {
         const enabled = await api.agents.setAutoCall(on);
@@ -124,14 +110,12 @@ export const useSession = create<SessionState>()(
       setCampaign: async (c) => {
         const a = get().agent;
         if (!a) return;
-        if (USE_BACKEND) {
-          // Switching puts the agent on pause in the new campaign on the server
-          await api.campaigns.select(c.id, { oldCampaignId: a.campaignId });
-        }
+        // Switching puts the agent on pause in the new campaign on the server
+        await api.campaigns.select(c.id, { oldCampaignId: a.campaignId });
         set({ agent: { ...a, campaignId: c.id, campaignName: c.name } });
         useData.getState().setCampaign(c.id);
         // Someone who was taking calls goes straight back online in the new campaign
-        if (USE_BACKEND && get().live && get().status === 'available') await api.agents.goOnline(c.id);
+        if (get().live && get().status === 'available') await api.agents.goOnline(c.id);
       },
       updateAgent: (patch) => {
         const a = get().agent;
@@ -159,19 +143,16 @@ export const useSession = create<SessionState>()(
         // After the server ended the session (say the agent logged in on the web), a logout from here would
         // end the new session instead: the server's logout clears the agent's session row
         if (!opts?.serverEnded) {
-          // Tell the server to stop routing calls here. Best effort: the token is about to go either way.
-          if (get().token && get().status !== 'offline') void api.agents.setStatus('offline').catch(() => undefined);
           // End the session on the server too; the request takes the token before it's cleared below
           if (get().token) void api.auth.logout().catch(() => undefined);
         }
         setAuthToken(null);
-        if (USE_BACKEND) useCampaigns.setState({ list: [], allowSelection: true });
+        useCampaigns.setState({ list: [], allowSelection: true });
         useData.getState().wipe();
         useOutbox.getState().clear();
         set({
           token: null,
           agent: null,
-          deviceId: null,
           live: false,
           locked: false,
           lastActiveAt: Date.now(),

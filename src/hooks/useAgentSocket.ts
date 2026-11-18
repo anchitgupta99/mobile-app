@@ -1,7 +1,6 @@
 import { useEffect } from 'react';
 import { AppState } from 'react-native';
 import { connectAgentEvents, disconnectAgentEvents } from '@/api/events';
-import { USE_BACKEND } from '@/api/http';
 import { connectAgentSocket, disconnectAgentSocket, wakeAgentSocket } from '@/api/socket';
 import { notify } from '@/components/feedback';
 import { useData } from '@/store/data';
@@ -34,7 +33,7 @@ export function useAgentSocket() {
   const token = useSession((s) => s.token);
 
   useEffect(() => {
-    if (!USE_BACKEND || !token) return;
+    if (!token) return;
     connectAgentSocket(token, {
       forcedLogout: (message) => useSession.getState().logout(message, { serverEnded: true }),
       sessionExpired: () => useSession.getState().logout(SESSION_EXPIRED, { serverEnded: true }),

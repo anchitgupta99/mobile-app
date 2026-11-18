@@ -1,26 +1,21 @@
 import { create } from 'zustand';
 import { api } from '@/api/client';
 import { ApiError, webText } from '@/api/errors';
-import { USE_BACKEND } from '@/api/http';
 import { notify } from '@/components/feedback';
-import { realtime } from '@/api/realtime';
-import { sampleNetwork } from '@/api/network';
-import type { CallDirection, CallMode, CallRecord, CallState, NetworkSample, ScreenPop, Task } from '@/domain/types';
+import type { CallDirection, CallMode, CallRecord, CallState, ScreenPop } from '@/domain/types';
 import { uid } from '@/domain/format';
-import { contactById, findContactByNumber, useData } from '@/store/data';
+import { useData } from '@/store/data';
 import { useSession } from '@/store/session';
 import { useSettings, type AudioRoute } from '@/store/settings';
 import { findCampaign } from '@/store/campaigns';
 import type { CallAdapter } from './adapter';
-import { bridgeAdapter } from './bridge';
-import { checkBeforeDial } from './compliance';
-import { runNetworkCheck, type NetworkVerdict } from './networkCheck';
 import { voipAdapter } from './voip';
 import { nativeCall } from './nativeCall';
 import { setCallAudioRoute, startCallAudio, stopCallAudio } from './sip/audioRoute';
 import { setSipCallHandlers, type IncomingSipCall } from './sip/sipPhone';
 import type { InboundEnded, InboundRing } from '@/api/socket';
 import { MASK_CHAR, maskPhoneForDisplay, maskPhoneFully, type PhoneMaskRule } from '@/domain/phoneMask';
+import { resolveCallTypeLabel } from '@/domain/callType';
 
 export type DialSource = 'keypad' | 'contact' | 'history' | 'task';
 
@@ -51,16 +46,14 @@ export type ActiveCall = {
   accepting?: boolean;
   route: AudioRoute;
   dtmf: string;
-  quality: NetworkSample | null;
-  verdict: NetworkVerdict | null;
-  fallback: boolean;
-  modeOverridden: boolean;
   error: string | null;
   /** Telephony call UUID, shown on the call screen and kept on the call record */
   uuid: string;
   campaignName: string;
   listName: string;
   dialMode: DialMode;
+  /** The web's call-type label: Manual, Inbound, Predictive, Progressive, Preview, Callback, Transfer, Conference… */
+  callType: string;
   /** Backend: the call's own campaign (an inbound or auto-dial-group call can differ from the agent's) */
   campaignId?: string;
   /** Backend: the lead the server dialed or matched, sent with the disposition */
@@ -117,10 +110,7 @@ type CallStore = {
   consult: Consult | null;
   conference: Conference | null;
   startConsult: (kind: Consult['kind'], target: Omit<Leg, 'muted'>, presence?: 'available' | 'away' | 'busy') => void;
-  setConsultState: (state: ConsultState) => void;
   cancelConsult: () => void;
-  completeTransfer: () => void;
-  mergeConsult: () => void;
   toggleLegMute: (id: string) => void;
   removeLeg: (id: string) => void;
   setNote: (callId: string, text: string) => void;
@@ -129,12 +119,10 @@ type CallStore = {
     contactId?: string | null;
     source: DialSource;
     taskId?: string | null;
-    mode?: CallMode;
     dialMode?: DialMode;
     /** Backend: a due "For Me" callback the server asked the app to dial (the web's type CALLBACK) */
     callback?: boolean;
   }) => Promise<DialResult>;
-  receiveIncoming: (pop: ScreenPop, mode: CallMode, fallback: boolean) => void;
   answer: () => Promise<void>;
   decline: () => void;
   toggleMute: () => void;
@@ -156,20 +144,10 @@ type CallStore = {
 };
 
 let transferredTo: string | null = null;
-const timers = new Set<ReturnType<typeof setTimeout>>();
-let qualityTimer: ReturnType<typeof setInterval> | null = null;
 let statusPoll: ReturnType<typeof setInterval> | null = null;
 let conferencePoll: ReturnType<typeof setInterval> | null = null;
 
 const digits = (s: string) => s.replace(/\D/g, '');
-
-function later(ms: number, fn: () => void) {
-  const t = setTimeout(() => {
-    timers.delete(t);
-    fn();
-  }, ms);
-  timers.add(t);
-}
 
 // Accept/reject inbound, as the web's incoming panel: the ring time the server sent with the call (socket
 // inbound:incoming), the timer that declines it once that time is up, and the last ring the server ended itself
@@ -186,28 +164,22 @@ function clearRingTimer() {
 
 function clearTimers() {
   clearRingTimer();
-  timers.forEach(clearTimeout);
-  timers.clear();
-  if (qualityTimer) clearInterval(qualityTimer);
-  qualityTimer = null;
   if (statusPoll) clearInterval(statusPoll);
   statusPoll = null;
   if (conferencePoll) clearInterval(conferencePoll);
   conferencePoll = null;
 }
 
-function adapterFor(mode: CallMode): CallAdapter {
-  return mode === 'voip' ? voipAdapter : bridgeAdapter;
-}
-
-function callMeta(dialMode: DialMode) {
+function callMeta(dialMode: DialMode, callType: string) {
   const agent = useSession.getState().agent;
   const campaign = findCampaign(agent?.campaignId);
   return {
     uuid: newCallUuid(),
     campaignName: campaign?.name ?? agent?.campaignName ?? 'No campaign',
-    listName: campaign?.listName ?? '—',
+    // Backend: the lead's list comes with the call's context (loadContext); hidden until then
+    listName: campaign?.listName ?? '',
     dialMode,
+    callType,
   };
 }
 
@@ -216,12 +188,6 @@ function newCallUuid() {
   // RFC 4122 v4: version nibble 4, variant nibble 8-b
   const variant = '89ab'[Math.floor(Math.random() * 4)];
   return `${hex(8)}-${hex(4)}-4${hex(3)}-${variant}${hex(3)}-${hex(12)}`;
-}
-
-/** The app's sample contacts are the demo's only: against the backend the caller is who the server says (call context) */
-function sampleContact(number: string, contactId?: string | null) {
-  if (USE_BACKEND) return null;
-  return contactById(contactId) ?? findContactByNumber(number);
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -244,14 +210,10 @@ function customerLegName(name: string, role: string | null | undefined, call: Ac
   return /^[+\d\s()-]+$/.test(String(name ?? '').trim()) ? masked : name;
 }
 
-export function buildPop(number: string, contactId?: string | null): ScreenPop {
-  const contact = sampleContact(number, contactId);
-  const openTasks = contact ? useData.getState().tasks.filter((t) => t.contactId === contact.id && !t.done) : [];
+/** The caller is who the server says (call context, see loadContext); the pop carries the number and the queue */
+export function buildPop(number: string): ScreenPop {
   return {
-    contact,
     number,
-    openTasks,
-    lastDisposition: contact?.lastDisposition ?? null,
     queue: useSession.getState().agent?.campaignName ?? 'Default queue',
   };
 }
@@ -269,7 +231,6 @@ export const useCall = create<CallStore>((set, get) => {
    * as it is. An answer that comes after the call ended goes onto its record, which the wrap-up reads.
    */
   const loadContext = (id: string) => {
-    if (!USE_BACKEND) return;
     const c = get().call;
     if (!c || c.id !== id || !c.number) return;
     const campaignId = c.campaignId ?? useSession.getState().agent?.campaignId;
@@ -304,16 +265,6 @@ export const useCall = create<CallStore>((set, get) => {
               }
             : r,
         ),
-        // The missed-call reminder made for it shows the same name and number
-        tasks: s.tasks.map((t) =>
-          t.createdFromCallId === id && t.kind === 'missed'
-            ? {
-                ...t,
-                ...(displayNumber !== undefined && { displayNumber }),
-                ...(customerName !== undefined && { name: customerName }),
-              }
-            : t,
-        ),
       }));
     };
     api.liveCalls
@@ -326,17 +277,12 @@ export const useCall = create<CallStore>((set, get) => {
           customerName: ctx.name || undefined,
           leadId: (cur?.id === id ? cur.leadId : null) ?? ctx.leadId,
           listId: ctx.listId,
+          listName: ctx.listName,
           campaignPrefix: ctx.prefix,
         });
       })
       // As the web: the last rule known for this campaign, else the number as it is
       .catch(() => apply({ displayNumber: maskPhoneForDisplay(c.number, maskRules.get(campaignId) ?? null) }));
-  };
-
-  const startQuality = () => {
-    if (qualityTimer) clearInterval(qualityTimer);
-    patch({ quality: sampleNetwork() });
-    qualityTimer = setInterval(() => patch({ quality: sampleNetwork() }), 2000);
   };
 
   // Bound to a call id: the ring/answer timers that schedule it must not connect a newer call
@@ -345,7 +291,6 @@ export const useCall = create<CallStore>((set, get) => {
     if (!c || c.id !== id || c.state === 'ended') return;
     patch({ state: 'connected', connectedAt: Date.now() });
     nativeCall.reportConnected(c.id);
-    if (c.mode === 'voip') startQuality();
   };
 
   // Like the web after a manual call (startCallStatusPolling): the server's session turns INCALL once the
@@ -386,7 +331,7 @@ export const useCall = create<CallStore>((set, get) => {
   // Like the web's resetCall: the call is over, so the server moves the agent on to the disposition (DISPO).
   // Only for a call that goes to wrap-up: otherwise the agent would be left waiting on a disposition.
   const reportEnded = () => {
-    if (USE_BACKEND) void api.liveCalls.ended().catch(() => undefined);
+    void api.liveCalls.ended().catch(() => undefined);
   };
 
   /**
@@ -401,8 +346,16 @@ export const useCall = create<CallStore>((set, get) => {
     const inbound = type === 'inbound' || info.transfer || info.conference;
     const live = !info.acceptReject && (inbound || type === 'predictive');
     const number = info.customerNumber ?? '';
-    const contact = sampleContact(number);
-    const meta = callMeta(inbound ? 'Inbound' : 'Auto');
+    // As the web: the server's type for the call (X-Call-Type, or a transfer / conference), else its direction,
+    // else the campaign's dial type
+    const meta = callMeta(
+      inbound ? 'Inbound' : 'Auto',
+      resolveCallTypeLabel({
+        callType: info.transfer ? 'TRANSFER' : info.conference ? 'CONFERENCE' : info.callType,
+        direction: inbound ? 'inbound' : 'outbound',
+        dialType: findCampaign(info.campaignId ?? undefined)?.dialType,
+      }),
+    );
     const id = uid('cl');
     set({
       call: {
@@ -411,8 +364,8 @@ export const useCall = create<CallStore>((set, get) => {
         mode: 'voip',
         state: live ? 'connected' : 'ringing',
         number,
-        contactId: contact?.id ?? null,
-        pop: buildPop(number, contact?.id),
+        contactId: null,
+        pop: buildPop(number),
         source: inbound ? 'inbound' : 'keypad',
         taskId: null,
         createdAt: Date.now(),
@@ -422,10 +375,6 @@ export const useCall = create<CallStore>((set, get) => {
         held: false,
         route: useSettings.getState().defaultAudio,
         dtmf: '',
-        quality: null,
-        verdict: null,
-        fallback: false,
-        modeOverridden: false,
         error: null,
         ...meta,
         uuid: info.callUuid ?? meta.uuid,
@@ -440,9 +389,8 @@ export const useCall = create<CallStore>((set, get) => {
     loadContext(id);
     if (live) {
       nativeCall.reportConnected(id);
-      startQuality();
     } else if (info.acceptReject) {
-      nativeCall.reportIncoming(id, contact?.name ?? number);
+      nativeCall.reportIncoming(id, number);
       startRingTimer();
     } else {
       nativeCall.reportOutgoing(id, number);
@@ -572,32 +520,10 @@ export const useCall = create<CallStore>((set, get) => {
       displayNumber: c.displayNumber,
       listId: c.listId,
       campaignPrefix: c.campaignPrefix,
-      fallbackUsed: c.fallback,
       updatedAt: new Date().toISOString(),
     };
     useData.getState().addCall(record);
     return record;
-  };
-
-  const createMissedTask = (c: ActiveCall) => {
-    const now = Date.now();
-    const task: Task = {
-      id: uid('tk'),
-      kind: 'missed',
-      title: 'Call back missed call',
-      contactId: c.contactId,
-      // The real number to call back on; shown as the campaign's masking says, like the call itself
-      number: c.number,
-      displayNumber: c.displayNumber,
-      name: c.customerName,
-      dueAt: new Date(now).toISOString(),
-      slaDueAt: new Date(now + 2 * 3600000).toISOString(),
-      notes: '',
-      done: false,
-      createdFromCallId: c.id,
-      updatedAt: new Date(now).toISOString(),
-    };
-    useData.getState().upsertTask(task);
   };
 
   return {
@@ -611,23 +537,7 @@ export const useCall = create<CallStore>((set, get) => {
     startConsult: (kind, target, presence = 'available') => {
       const c = get().call;
       if (!c || get().consult) return;
-      if (USE_BACKEND) return void startServerConsult(kind, target);
-      const heldBefore = c.state === 'held';
-      if (c.state === 'connected') get().toggleHold();
-      const startedAt = Date.now();
-      set({ consult: { kind, target: { ...target, muted: false }, state: 'calling', startedAt, answeredAt: null, heldBefore } });
-      // Away agents don't pick up, busy ones bounce; everyone else answers after a couple of rings
-      later(presence === 'available' ? 2400 : 3200, () => {
-        const x = get().consult;
-        if (!x || x.startedAt !== startedAt || x.state !== 'calling') return;
-        if (presence === 'available') set({ consult: { ...x, state: 'answered', answeredAt: Date.now() } });
-        else set({ consult: { ...x, state: presence === 'busy' ? 'busy' : 'no-answer' } });
-      });
-    },
-
-    setConsultState: (state) => {
-      const x = get().consult;
-      if (x) set({ consult: { ...x, state, answeredAt: state === 'answered' ? (x.answeredAt ?? Date.now()) : x.answeredAt } });
+      startServerConsult(kind, target);
     },
 
     cancelConsult: () => {
@@ -637,40 +547,6 @@ export const useCall = create<CallStore>((set, get) => {
       if (!x.heldBefore && get().call?.state === 'held') get().toggleHold();
     },
 
-    completeTransfer: () => {
-      const x = get().consult;
-      if (!x || x.state !== 'answered') return;
-      set({ consult: null, conference: null });
-      transferredTo = x.target.name;
-      get().end();
-    },
-
-    mergeConsult: () => {
-      const x = get().consult;
-      const c = get().call;
-      if (!x || !c || x.state !== 'answered') return;
-      set({ consult: { ...x, state: 'merging' } });
-      later(900, () => {
-        const cur = get().consult;
-        if (!cur || cur.state !== 'merging') return;
-        const conf = get().conference;
-        const customer: Leg = {
-          id: 'customer',
-          name: c.pop.contact?.name ?? c.customerName ?? c.displayNumber ?? c.number,
-          role: 'Customer',
-          kind: 'customer',
-          muted: false,
-        };
-        set({
-          consult: null,
-          conference: conf
-            ? { ...conf, legs: [...conf.legs.filter((l) => l.id !== cur.target.id), cur.target] }
-            : { startedAt: Date.now(), legs: [customer, cur.target] },
-        });
-        if (!cur.heldBefore && get().call?.state === 'held') get().toggleHold();
-      });
-    },
-
     toggleLegMute: (id) => {
       const conf = get().conference;
       if (!conf) return;
@@ -678,7 +554,7 @@ export const useCall = create<CallStore>((set, get) => {
       set({ conference: { ...conf, legs: conf.legs.map((l) => (l.id === id ? { ...l, muted: !l.muted } : l)) } });
       const c = get().call;
       // The member's mute in the conference room; the next poll shows the server's state either way
-      if (USE_BACKEND && leg && c) {
+      if (leg && c) {
         void api.liveCalls
           .conferenceMute(c.uuid, id, !leg.muted)
           .catch(() => notify(`Couldn't ${leg.muted ? 'unmute' : 'mute'} ${leg.name}`, 'error', undefined, { title: 'Action failed' }));
@@ -689,58 +565,45 @@ export const useCall = create<CallStore>((set, get) => {
       const conf = get().conference;
       if (!conf) return;
       const legs = conf.legs.filter((l) => l.id !== id);
-      if (USE_BACKEND) {
-        // Out of the conference room on the server. The call stays in the room with whoever is left (the
-        // web ends the whole conference instead once one participant is left); the next poll shows it.
-        const c = get().call;
-        const leg = conf.legs.find((l) => l.id === id);
-        // The web's toasts: "Removed" on success, "Action failed" otherwise
-        if (c && leg) {
-          void api.liveCalls.conferenceKick(c.uuid, id).then(
-            () => notify(`${leg.name} was removed from the conference`, 'success', undefined, { title: 'Removed' }),
-            () => notify(`Couldn't remove ${leg.name}`, 'error', undefined, { title: 'Action failed' }),
-          );
-        }
-        if (!legs.some((l) => l.kind === 'customer')) return get().end();
-        set({ conference: { ...conf, legs } });
-        return;
+      // Out of the conference room on the server. The call stays in the room with whoever is left (the web ends
+      // the whole conference instead once one participant is left); the next poll shows it.
+      const c = get().call;
+      const leg = conf.legs.find((l) => l.id === id);
+      // The web's toasts: "Removed" on success, "Action failed" otherwise
+      if (c && leg) {
+        void api.liveCalls.conferenceKick(c.uuid, id).then(
+          () => notify(`${leg.name} was removed from the conference`, 'success', undefined, { title: 'Removed' }),
+          () => notify(`Couldn't remove ${leg.name}`, 'error', undefined, { title: 'Action failed' }),
+        );
       }
-      // Without the customer there is no call left to have: agents talking to each other is not a customer call
       if (!legs.some((l) => l.kind === 'customer')) return get().end();
-      // Back to a plain two-party call once only the customer is left
-      set({ conference: legs.length <= 1 ? null : { ...conf, legs } });
+      set({ conference: { ...conf, legs } });
     },
 
     setNote: (callId, text) => set((s) => ({ notes: { ...s.notes, [callId]: text } })),
 
-    startOutbound: async ({ number, contactId = null, source, taskId = null, mode, dialMode = 'Manual', callback = false }) => {
+    startOutbound: async ({ number, source, taskId = null, dialMode = 'Manual', callback = false }) => {
       if (get().call) return { ok: false, title: 'Already on a call', message: 'End the current call first.' };
       const wrap = get().wrapUpCallId;
       if (wrap) {
         return { ok: false, title: 'Finish wrap-up first', message: 'Your last call needs a disposition before the next one.' };
       }
-      const contact = sampleContact(number, contactId);
-      const data = useData.getState();
-      // Against the backend the server decides, as for the web: DNC and the campaign's own calling hours,
-      // days and dates. The app's fixed 9:00–21:00 check is for the demo's mock contacts only.
-      if (!USE_BACKEND) {
-        const compliance = checkBeforeDial(contact, data.server.featureFlags.callingHours !== false);
-        if (!compliance.ok) return { ok: false, title: compliance.title, message: compliance.message };
-      }
-
+      // The server decides the rest, as for the web: DNC and the campaign's own calling hours, days and dates
       const id = uid('cl');
-      const pref = useSettings.getState().callMode;
       if (taskId) set((s) => ({ taskLinks: { ...s.taskLinks, [id]: taskId } }));
       set({
         call: {
           id,
           direction: 'outbound',
-          // Against the backend every call goes over the app's webphone
-          mode: pref === 'bridge' && !USE_BACKEND ? 'bridge' : 'voip',
-          state: 'checking',
+          // Every call goes over the app's webphone
+          mode: 'voip',
+          // End waits for the server's answer to the dial, as the web's dial button stays busy until then;
+          // ending earlier would leave the server dialing a customer the app no longer shows
+          state: 'dialing',
+          dialPending: true,
           number,
-          contactId: contact?.id ?? null,
-          pop: buildPop(number, contact?.id),
+          contactId: null,
+          pop: buildPop(number),
           source,
           taskId,
           createdAt: Date.now(),
@@ -750,33 +613,17 @@ export const useCall = create<CallStore>((set, get) => {
           held: false,
           route: useSettings.getState().defaultAudio,
           dtmf: '',
-          quality: null,
-          verdict: null,
-          fallback: false,
-          modeOverridden: !!mode,
           error: null,
-          ...callMeta(dialMode),
+          // A dial from the app is Manual; a due For-Me callback is Callback, as the web labels them
+          ...callMeta(dialMode, resolveCallTypeLabel({ callType: callback ? 'CALLBACK' : 'MANUAL' })),
         },
       });
       // The agent's campaign, as the web's call page asks it; asked again below if the server dials in another
       loadContext(id);
 
-      let resolved: CallMode;
-      if (USE_BACKEND) resolved = 'voip';
-      else if (mode) resolved = mode;
-      else if (pref === 'auto') {
-        const verdict = await runNetworkCheck(data.server.modeThresholds);
-        patch({ verdict });
-        resolved = verdict.mode;
-      } else resolved = pref;
-
-      if (get().call?.id !== id) return { ok: true };
-      // Backend: End waits for the server's answer to the dial, as the web's dial button stays busy until then;
-      // ending earlier would leave the server dialing a customer the app no longer shows
-      patch({ mode: resolved, state: 'dialing', ...(USE_BACKEND && { dialPending: true }) });
       let dialed: Awaited<ReturnType<CallAdapter['dial']>>;
       try {
-        dialed = await adapterFor(resolved).dial({ number, contactId: contact?.id ?? null, callback });
+        dialed = await voipAdapter.dial({ number, contactId: null, callback });
         if (get().call?.id === id) patch({ dialPending: false });
       } catch (e) {
         const cur = get().call;
@@ -785,7 +632,7 @@ export const useCall = create<CallStore>((set, get) => {
         // The server dialed the customer and its call already reached the webphone (the request failed on the way
         // back, e.g. the connection dropped): the call goes ahead, so no error, as on the web, whose call screen
         // runs on the webphone's call rather than on this request
-        if (USE_BACKEND && cur.onWebphone) {
+        if (cur.onWebphone) {
           patch({ dialPending: false });
           nativeCall.reportOutgoing(id, number);
           if (cur.state === 'dialing') patch({ state: 'ringing' });
@@ -794,104 +641,46 @@ export const useCall = create<CallStore>((set, get) => {
         }
         clearTimers();
         set({ call: null });
-        if (USE_BACKEND) {
-          // The web's manual call: a "Call Failed" toast with the server's message, else its error, else its fallback
-          return { ok: false, toast: true, title: 'Call Failed', message: webText(e, ['message', 'error'], 'Unable to start call') };
-        }
-        return {
-          ok: false,
-          title: 'Call could not start',
-          message: e instanceof Error ? `${e.message}. Try again when you have signal.` : 'Try again.',
-        };
+        // The web's manual call: a "Call Failed" toast with the server's message, else its error, else its fallback
+        return { ok: false, toast: true, title: 'Call Failed', message: webText(e, ['message', 'error'], 'Unable to start call') };
       }
       nativeCall.reportOutgoing(id, number);
-      if (USE_BACKEND) {
-        // The server is dialing the customer now; its INVITE to the webphone may already have come in
-        const current = get().call;
-        if (current?.id === id) {
-          patch({
-            // The INVITE's id wins when it came first (the web keeps the INVITE's too)
-            uuid: current.onWebphone ? current.uuid : dialed.callId,
-            leadId: dialed.leadId ?? current.leadId ?? null,
-            campaignId: dialed.campaignId ?? current.campaignId,
-            ...(current.state === 'dialing' && { state: 'ringing' as const }),
-          });
-          // An auto-dial group resolves to one of its campaigns: its own rules and lead
-          loadContext(id);
-          connectWhenAnswered(id);
-        }
-        return { ok: true };
+      // The server is dialing the customer now; its INVITE to the webphone may already have come in
+      const current = get().call;
+      if (current?.id === id) {
+        patch({
+          // The INVITE's id wins when it came first (the web keeps the INVITE's too)
+          uuid: current.onWebphone ? current.uuid : dialed.callId,
+          leadId: dialed.leadId ?? current.leadId ?? null,
+          campaignId: dialed.campaignId ?? current.campaignId,
+          ...(current.state === 'dialing' && { state: 'ringing' as const }),
+        });
+        // An auto-dial group resolves to one of its campaigns: its own rules and lead
+        loadContext(id);
+        connectWhenAnswered(id);
       }
-      later(resolved === 'bridge' ? 2600 : 1200, () => patch({ state: 'ringing' }));
-      later(resolved === 'bridge' ? 5200 : 3600, () => connect(id));
       return { ok: true };
-    },
-
-    receiveIncoming: (pop, mode, fallback) => {
-      // A pending wrap-up must get its disposition before another call can take its place
-      if (get().call || get().wrapUpCallId) return;
-      const id = uid('cl');
-      set({
-        call: {
-          id,
-          direction: 'inbound',
-          mode,
-          state: 'ringing',
-          number: pop.number,
-          contactId: pop.contact?.id ?? null,
-          pop,
-          source: 'inbound',
-          taskId: null,
-          createdAt: Date.now(),
-          connectedAt: null,
-          endedAt: null,
-          muted: false,
-          held: false,
-          route: useSettings.getState().defaultAudio,
-          dtmf: '',
-          quality: null,
-          verdict: null,
-          fallback,
-          modeOverridden: false,
-          error: null,
-          ...callMeta('Inbound'),
-        },
-      });
-      nativeCall.reportIncoming(id, pop.contact?.name ?? pop.number);
-      later(25000, () => {
-        const c = get().call;
-        if (c?.id === id && c.state === 'ringing') get().decline();
-      });
     },
 
     answer: async () => {
       const c = get().call;
       if (!c || c.state !== 'ringing' || c.direction !== 'inbound') return;
-      if (USE_BACKEND) {
-        // Accept/reject inbound: the webphone already answered, the server connects the customer on Accept. As
-        // the web's incoming panel: it keeps ringing while Accept is with the server, and if that fails the
-        // agent can press Accept again ("Inbound call" / "Failed to accept call")
-        if (c.accepting) return;
-        patch({ accepting: true });
-        try {
-          await api.liveCalls.acceptInbound(c.uuid, c.agentCallUuid ?? null);
-        } catch {
-          if (get().call?.id === c.id) patch({ accepting: false });
-          notify('Failed to accept call', 'error', undefined, { title: 'Inbound call' });
-          return;
-        }
-        if (get().call?.id !== c.id) return;
-        clearTimers();
-        patch({ accepting: false, state: 'dialing' });
-        connectWhenAnswered(c.id);
+      // Accept/reject inbound: the webphone already answered, the server connects the customer on Accept. As the
+      // web's incoming panel: it keeps ringing while Accept is with the server, and if that fails the agent can
+      // press Accept again ("Inbound call" / "Failed to accept call")
+      if (c.accepting) return;
+      patch({ accepting: true });
+      try {
+        await api.liveCalls.acceptInbound(c.uuid, c.agentCallUuid ?? null);
+      } catch {
+        if (get().call?.id === c.id) patch({ accepting: false });
+        notify('Failed to accept call', 'error', undefined, { title: 'Inbound call' });
         return;
       }
+      if (get().call?.id !== c.id) return;
       clearTimers();
-      patch({ state: 'dialing' });
-      await adapterFor(c.mode)
-        .answer(c.id)
-        .catch(() => undefined);
-      later(c.mode === 'bridge' ? 900 : 400, () => connect(c.id));
+      patch({ accepting: false, state: 'dialing' });
+      connectWhenAnswered(c.id);
     },
 
     decline: () => {
@@ -900,19 +689,19 @@ export const useCall = create<CallStore>((set, get) => {
       if (!c || c.direction !== 'inbound' || c.state !== 'ringing') return;
       clearTimers();
       const ended = { ...c, state: 'ended' as const, endedAt: Date.now() };
+      // As the web: a missed call is in the history and gets a toast, no reminder
       recordCall(ended, 'missed');
-      createMissedTask(ended);
       nativeCall.reportEnded(c.id);
       set({ call: null });
       // The server hangs up the agent's leg and offers the customer to the next agent
-      if (USE_BACKEND) void api.liveCalls.rejectInbound(c.uuid, c.agentCallUuid ?? null).catch(() => undefined);
+      void api.liveCalls.rejectInbound(c.uuid, c.agentCallUuid ?? null).catch(() => undefined);
     },
 
     toggleMute: () => {
       const c = get().call;
       if (!c) return;
       patch({ muted: !c.muted });
-      void adapterFor(c.mode)
+      void voipAdapter
         .mute(c.id, !c.muted)
         .catch(() => patch({ muted: c.muted }));
     },
@@ -921,27 +710,18 @@ export const useCall = create<CallStore>((set, get) => {
       const c = get().call;
       if (!c || (c.state !== 'connected' && c.state !== 'held')) return;
       const on = c.state === 'connected';
-      if (USE_BACKEND) {
-        // The web's toggleHold: one request at a time (taps while it runs are ignored), and the call only shows
-        // "On hold" once the server has put the customer on hold music; a failure leaves it as it was
-        if (c.holdPending) return;
-        patch({ holdPending: true, holdFailed: false, error: null });
-        const settle = (p: Partial<ActiveCall>) => {
-          if (get().call?.id === c.id) patch({ holdPending: false, ...p });
-        };
-        void adapterFor(c.mode)
-          .hold(c.uuid, on)
-          .then(
-            () => settle({ state: on ? 'held' : 'connected', held: on }),
-            // The web's holdError: the server's message, else its error, else "Could not hold/resume the call"
-            (e) => settle({ holdFailed: true, error: webText(e, ['message', 'error'], `Could not ${on ? 'hold' : 'resume'} the call`) }),
-          );
-        return;
-      }
-      patch({ state: on ? 'held' : 'connected', held: on });
-      void adapterFor(c.mode)
-        .hold(c.uuid, on)
-        .catch(() => patch({ state: c.state, held: c.held, error: 'Hold failed. Check your connection.' }));
+      // The web's toggleHold: one request at a time (taps while it runs are ignored), and the call only shows
+      // "On hold" once the server has put the customer on hold music; a failure leaves it as it was
+      if (c.holdPending) return;
+      patch({ holdPending: true, holdFailed: false, error: null });
+      const settle = (p: Partial<ActiveCall>) => {
+        if (get().call?.id === c.id) patch({ holdPending: false, ...p });
+      };
+      void voipAdapter.hold(c.uuid, on).then(
+        () => settle({ state: on ? 'held' : 'connected', held: on }),
+        // The web's holdError: the server's message, else its error, else "Could not hold/resume the call"
+        (e) => settle({ holdFailed: true, error: webText(e, ['message', 'error'], `Could not ${on ? 'hold' : 'resume'} the call`) }),
+      );
     },
 
     setRoute: (route) => patch({ route }),
@@ -950,7 +730,7 @@ export const useCall = create<CallStore>((set, get) => {
       const c = get().call;
       if (!c) return;
       patch({ dtmf: (c.dtmf + d).slice(-24) });
-      void adapterFor(c.mode)
+      void voipAdapter
         .dtmf(c.id, d)
         .catch(() => undefined);
     },
@@ -959,7 +739,7 @@ export const useCall = create<CallStore>((set, get) => {
       const c = get().call;
       if (!c) return;
       // As the web's hang-up: a conference is ended for everyone in it, then this agent's leg
-      if (USE_BACKEND && get().conference) void api.liveCalls.endConference(c.uuid).catch(() => undefined);
+      if (get().conference) void api.liveCalls.endConference(c.uuid).catch(() => undefined);
       clearTimers();
       const ended = { ...c, state: 'ended' as const, endedAt: Date.now() };
       nativeCall.reportEnded(c.id);
@@ -972,7 +752,7 @@ export const useCall = create<CallStore>((set, get) => {
       transferredTo = null;
       // Only once the call is cleared: hanging up the webphone reports "ended" straight back (remoteEnded),
       // which must find nothing left to end
-      void adapterFor(c.mode).end(c.id);
+      void voipAdapter.end(c.id);
       if (!neverRang) reportEnded();
     },
 
@@ -986,7 +766,6 @@ export const useCall = create<CallStore>((set, get) => {
       // missed call with nothing to disposition; the server has already moved on
       if (c.direction === 'inbound' && c.state === 'ringing') {
         recordCall(ended, 'missed');
-        createMissedTask(ended);
         set({ call: null });
         // Its reason (inbound:ended) can come just after this
         serverEndedRing = { agentCallUuid: c.agentCallUuid, at: Date.now() };
@@ -1074,7 +853,7 @@ export const useCall = create<CallStore>((set, get) => {
       set({ call: null, wrapUpCallId: null, consult: null, conference: null, notes: {}, taskLinks: {} });
       // After clearing, so the webphone's "ended" doesn't record the call or open a wrap-up
       if (c) {
-        void adapterFor(c.mode).end(c.id);
+        void voipAdapter.end(c.id);
         nativeCall.reportEnded(c.id);
       }
     },
@@ -1085,9 +864,6 @@ export const useCall = create<CallStore>((set, get) => {
 // incoming call isn't delivered to a store instance that no screen renders any more.
 const registry = globalThis as { __claritelCallStoreUnsubscribe?: () => void };
 registry.__claritelCallStoreUnsubscribe?.();
-const offIncoming = realtime.on('call.incoming', ({ pop, mode, fallback }) => {
-  useCall.getState().receiveIncoming(pop, mode, fallback);
-});
 // Signing out (or a remote revoke) ends whatever call state is left so the auth gate and
 // call routing don't fight over the screen, and the next login doesn't inherit a wrap-up.
 const offSession = useSession.subscribe((s, prev) => {
@@ -1096,13 +872,11 @@ const offSession = useSession.subscribe((s, prev) => {
 // The webphone's audio follows the call: call mode (earpiece, proximity sensor) from the moment there is
 // a call, the route the agent picks on the call screen, and normal audio again once it's gone
 const offAudio = useCall.subscribe((s, prev) => {
-  if (!USE_BACKEND) return;
   if (s.call && !prev.call) startCallAudio(s.call.route);
   else if (!s.call && prev.call) stopCallAudio();
   else if (s.call && prev.call && s.call.route !== prev.call.route) setCallAudioRoute(s.call.route);
 });
 registry.__claritelCallStoreUnsubscribe = () => {
-  offIncoming();
   offSession();
   offAudio();
 };

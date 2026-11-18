@@ -13,9 +13,6 @@ import Animated, {
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CallMeta } from '@/components/call/CallMeta';
-import { InfoTip } from '@/components/InfoTip';
-import { ModeBadge } from '@/components/ModeBadge';
-import { helpText } from '@/domain/helpText';
 import { PressableScale } from '@/components/motion/PressableScale';
 import { feedback } from '@/feedback';
 import { useCallParty } from '@/components/PhoneText';
@@ -113,17 +110,14 @@ export default function Incoming() {
 
   if (!call) return <View style={{ flex: 1, backgroundColor: c.callScreen }} />;
   const { pop } = call;
-  // The lead's name as the server has it, else the web's "Unknown caller"; the number masked as the campaign says
-  const who = party(call, pop.contact?.name);
-  const name = who.named ? who.name : 'Unknown caller';
+  // The lead's name as the server has it, else the number (masked as the campaign says)
+  const who = party(call);
+  const name = who.name;
 
   return (
     <View style={{ flex: 1, backgroundColor: c.callScreen, paddingTop: insets.top + 16, paddingBottom: insets.bottom + 24 }}>
       <View style={{ alignItems: 'center', gap: 8, paddingHorizontal: 24 }}>
         <View style={{ flexDirection: 'row', gap: 8 }}>
-          <InfoTip {...helpText.callMode}>
-          <ModeBadge mode={call.mode} onDark />
-        </InfoTip>
           <View
             style={{
               flexDirection: 'row',
@@ -148,38 +142,20 @@ export default function Incoming() {
           <Animated.View
             style={[{ position: 'absolute', width: 96, height: 96, borderRadius: 48, backgroundColor: c.callControl }, ring]}
           />
-          <Avatar name={name} size={96} tone="invert" />
+          <Avatar name={who.named ? name : '#'} size={96} tone="invert" />
         </View>
         <T v="title" color={c.onCallScreen} style={{ fontSize: 28, lineHeight: 34, textAlign: 'center' }} accessibilityRole="header">
           {name}
         </T>
-        <T v="body" color={c.onCallScreen2} nums>
-          {pop.contact ? `${pop.contact.company} · ` : ''}
-          {who.number}
-        </T>
+        {/* The number under the name; without a name the title is already the number */}
+        {who.named && (
+          <T v="body" color={c.onCallScreen2} nums>
+            {who.number}
+          </T>
+        )}
       </View>
 
       <ScrollView style={{ flex: 1, marginTop: 20 }} contentContainerStyle={{ paddingHorizontal: 20, gap: 12 }}>
-        {call.mode === 'bridge' && (
-          <View
-            style={{
-              flexDirection: 'row',
-              gap: 10,
-              backgroundColor: c.warningBg,
-              borderColor: c.warningLine,
-              borderWidth: 1,
-              borderRadius: 14,
-              padding: 14,
-            }}
-          >
-            <Icon name="sim-card" color={c.warningFg} />
-            <T v="body" color={c.warningFg} style={{ flex: 1 }}>
-              {call.fallback
-                ? 'The app could not ring, so your phone line is ringing. Answer it there; this screen is your control panel.'
-                : 'Your phone line is ringing. Answer it there; this screen is your control panel.'}
-            </T>
-          </View>
-        )}
         <CallMeta call={call} />
       </ScrollView>
 

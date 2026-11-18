@@ -4,7 +4,6 @@ import { ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useDispositionLabel } from '@/components/CallCard';
 import { notify } from '@/components/feedback';
-import { ModeBadge } from '@/components/ModeBadge';
 import { ItemNotFound } from '@/components/ItemNotFound';
 import { PageHeader } from '@/components/PageHeader';
 import { PhoneText } from '@/components/PhoneText';
@@ -13,7 +12,6 @@ import { formatRelative, formatWhen } from '@/domain/format';
 import { useDial } from '@/hooks/useDial';
 import { useNow } from '@/hooks/useNow';
 import { useData } from '@/store/data';
-import { useSettings } from '@/store/settings';
 import { useTheme } from '@/theme';
 import { InfoTip } from '@/components/InfoTip';
 import { helpText } from '@/domain/helpText';
@@ -44,7 +42,6 @@ export default function TaskPreview() {
   const calls = useData((s) => s.calls);
   const completeTask = useData((s) => s.completeTask);
   const snoozeTask = useData((s) => s.snoozeTask);
-  const mode = useSettings((s) => s.callMode);
   const dial = useDial();
   const dispositionLabel = useDispositionLabel();
   // Opened from a deep link there is nothing behind this screen; land on the list instead of a dead tap
@@ -164,12 +161,6 @@ export default function TaskPreview() {
           borderTopColor: c.divider,
         }}
       >
-        {!task.done && number && !contact?.dnc && (
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, justifyContent: 'center' }}>
-            <T v="caption">Calls from your company number ·</T>
-            <ModeBadge mode={mode} />
-          </View>
-        )}
         <View style={{ flexDirection: 'row', gap: 10 }}>
           <Button
             label={task.done ? 'Reopen' : 'Mark done'}

@@ -1,7 +1,22 @@
-import { dispositionConfig } from '@/mocks/seed';
+import type { Disposition } from '../types';
 import { findPath, isComplete, pathLabel } from '../dispositions';
 
-const tree = dispositionConfig.dispositions;
+// A small tree shaped like a campaign's: outcomes, sub-dispositions under some, and the same label at two levels
+const tree: Disposition[] = [
+  {
+    code: 'interested',
+    label: 'Interested',
+    fields: [],
+    children: [
+      { code: 'int_quote', label: 'Wants a quote', fields: [] },
+      { code: 'int_docs', label: 'Sent document list', fields: [] },
+    ],
+  },
+  { code: 'not_interested', label: 'Not interested', fields: [], children: [{ code: 'ni_rate', label: 'Rate too high', fields: [] }] },
+  // "No answer" is both an outcome on its own and a group with sub-dispositions
+  { code: 'no_answer_group', label: 'No answer', fields: [], children: [{ code: 'na_retry', label: 'Retry later', fields: [] }] },
+  { code: 'no_answer', label: 'No answer', fields: [] },
+];
 
 describe('findPath', () => {
   it('resolves a leaf by code, label or full path label', () => {

@@ -6,8 +6,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { feedback } from '@/feedback';
 import { duration } from '@/theme/motion';
 import { RollingDigits } from './motion/RollingDigits';
-import { USE_BACKEND } from '@/api/http';
-import { useNetwork } from '@/api/network';
 import { useSipPhone } from '@/telephony/sip/sipPhone';
 import { formatDuration } from '@/domain/format';
 import type { AgentStatus } from '@/domain/types';
@@ -21,7 +19,7 @@ import { useAppMenu } from './AppMenu';
 import { helpText } from '@/domain/helpText';
 import { font, useTheme } from '@/theme';
 import { useStatusLabel, useStatusSheet } from './StatusSheet';
-import { Icon, IconButton, T, tap, type IconName } from './ui';
+import { Icon, IconButton, T, tap } from './ui';
 
 export function useStatusColor() {
   const { c } = useTheme();
@@ -116,15 +114,13 @@ export function StatusPill() {
   );
 }
 
+/** Changes still on their way to the server; the app doesn't measure the network, so there is no offline state */
 function ConnectivityChip() {
   const { c } = useTheme();
-  const quality = useNetwork((s) => s.quality);
   const pending = useOutbox((s) => s.items.length);
   const syncing = useOutbox((s) => s.syncing);
-  if (quality === 'good' && pending === 0) return null;
-  const offline = quality === 'offline';
-  const label = offline ? 'Offline' : quality === 'weak' && pending === 0 ? 'Weak signal' : syncing ? 'Syncing' : `${pending} to sync`;
-  const icon: IconName = offline ? 'cloud-off' : pending > 0 ? 'cloud-upload' : 'signal-cellular-alt-1-bar';
+  if (pending === 0) return null;
+  const label = syncing ? 'Syncing' : `${pending} to sync`;
   return (
     <Pressable
       accessibilityRole="button"
@@ -138,13 +134,11 @@ function ConnectivityChip() {
         flexDirection: 'row',
         alignItems: 'center',
         gap: 4,
-        backgroundColor: offline ? c.warningBg : c.topbarControl,
-        borderWidth: offline ? 1 : 0,
-        borderColor: c.warningLine,
+        backgroundColor: c.topbarControl,
       }}
     >
-      <Icon name={icon} size={16} color={offline ? c.warningFg : c.onTopbar} />
-      <T v="caption" color={offline ? c.warningFg : c.onTopbar} style={{ fontFamily: font.semibold }}>
+      <Icon name="cloud-upload" size={16} color={c.onTopbar} />
+      <T v="caption" color={c.onTopbar} style={{ fontFamily: font.semibold }}>
         {label}
       </T>
     </Pressable>
@@ -159,7 +153,7 @@ function ConnectivityChip() {
 function WebphoneChip() {
   const { c } = useTheme();
   const status = useSipPhone((s) => s.status);
-  if (!USE_BACKEND || status === 'idle') return null;
+  if (status === 'idle') return null;
   const registered = status === 'registered';
   const dot = registered ? c.signalOk : status === 'connecting' ? c.signalWarn : status === 'failed' ? c.danger : c.ink3;
   const state = registered ? 'registered' : status === 'connecting' ? 'connecting' : status === 'failed' ? 'registration failed' : 'not connected';

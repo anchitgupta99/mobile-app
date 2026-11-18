@@ -1,12 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Pressable, View } from 'react-native';
 import Animated, { useAnimatedStyle, useReducedMotion, useSharedValue, withSequence, withTiming } from 'react-native-reanimated';
 import { PressableScale } from '@/components/motion/PressableScale';
 import { Icon, T, tap } from '@/components/ui';
 import { formatDialed } from '@/domain/format';
-import type { Contact } from '@/domain/types';
 import { feedback } from '@/feedback';
-import { useData } from '@/store/data';
 import { useDialpad } from '@/store/dialpad';
 import { font, useTheme } from '@/theme';
 import { animateTo } from '@/theme/motion';
@@ -25,13 +23,6 @@ const keys: [string, string][] = [
   ['0', '+'],
   ['#', ''],
 ];
-
-/** Matches the last ten digits so a typed number finds the contact however their number was stored */
-function matchContact(contacts: Contact[], num: string): Contact | null {
-  const d = num.replace(/\D/g, '').slice(-10);
-  if (d.length < 10) return null;
-  return contacts.find((c) => c.phone.replace(/\D/g, '').endsWith(d)) ?? null;
-}
 
 // Keys shrink on short screens (or large system font) so the number display never gets squeezed.
 const KEY_MAX = 76;
@@ -92,7 +83,6 @@ export default function Dialer() {
   const { c } = useTheme();
   const num = useDialpad((s) => s.num);
   const setNum = useDialpad((s) => s.setNum);
-  const contacts = useData((s) => s.contacts);
   const reduced = useReducedMotion();
   const pop = useSharedValue(1);
   const prevLen = useRef(0);
@@ -107,8 +97,6 @@ export default function Dialer() {
   }, [num, reduced, pop]);
 
   const popStyle = useAnimatedStyle(() => ({ transform: [{ scale: pop.get() }] }));
-
-  const match = useMemo(() => matchContact(contacts, num), [contacts, num]);
 
   // 4 digit rows; the call button lives in the tab bar
   const rows = 4 + 3 * 0.2;
@@ -155,13 +143,6 @@ export default function Dialer() {
               </Pressable>
             )}
           </View>
-        </View>
-        <View style={{ minHeight: 22 }}>
-          {match ? (
-            <T v="label" color={c.purple}>
-              {match.name} · {match.company}
-            </T>
-          ) : null}
         </View>
       </View>
 

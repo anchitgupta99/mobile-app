@@ -1,7 +1,5 @@
 import { create } from 'zustand';
-import { USE_BACKEND } from '@/api/http';
 import type { Campaign } from '@/domain/types';
-import { campaigns as demoCampaigns } from '@/mocks/seed';
 
 type CampaignsState = {
   /** The agent's campaigns (and auto-dial group), loaded after login by useSession.syncCampaign */
@@ -13,7 +11,7 @@ type CampaignsState = {
 };
 
 export const useCampaigns = create<CampaignsState>(() => ({
-  list: USE_BACKEND ? [] : demoCampaigns,
+  list: [],
   allowSelection: true,
   error: null,
 }));

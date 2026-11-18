@@ -28,10 +28,10 @@ describe('mergeById', () => {
 describe('pendingIds', () => {
   it('maps every queued item to the record it changes, ignoring status', () => {
     const items = [
-      { key: 'k1', kind: 'disposition', label: '', attempts: 0, createdAt: '', payload: { callId: 'cl_1', code: 'x', notes: '', fields: {}, submittedAt: '' } },
+      { key: 'k1', kind: 'task', label: '', attempts: 0, createdAt: '', payload: { id: 'tk_1' } },
       { key: 'k2', kind: 'contact', label: '', attempts: 0, createdAt: '', payload: { id: 'ct_1', patch: {} } },
       { key: 'k3', kind: 'status', label: '', attempts: 0, createdAt: '', payload: { status: 'available', breakCode: null } },
     ] as OutboxItem[];
-    expect([...pendingIds(items)].sort()).toEqual(['cl_1', 'ct_1']);
+    expect([...pendingIds(items)].sort()).toEqual(['ct_1', 'tk_1']);
   });
 });

@@ -2,10 +2,10 @@ import { ApiError } from './errors';
 
 /**
  * Backend base URL from EXPO_PUBLIC_API_URL: a PC's backend in development (http://192.168.1.38:4000) or the
- * deployed one (https://dialer.claritel.ai/backend, set per build profile in eas.json); unset keeps the in-app mock API
+ * deployed one (https://dialer.claritel.ai/backend, set per build profile in eas.json). The app needs it: without
+ * it every request fails with "The server address is not set".
  */
 export const API_URL = process.env.EXPO_PUBLIC_API_URL?.trim().replace(/\/+$/, '') || null;
-export const USE_BACKEND = API_URL !== null;
 /**
  * The live socket's server. The socket lives at the domain root (/ws) while a deployed API sits under a path
  * (https://domain/backend), so by default it is the API URL's scheme + host + port, like the web's fallback to

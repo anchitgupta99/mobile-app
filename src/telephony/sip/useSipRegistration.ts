@@ -1,6 +1,5 @@
 import { useEffect } from 'react';
 import { AppState } from 'react-native';
-import { USE_BACKEND } from '@/api/http';
 import { useSession } from '@/store/session';
 import { useSipPhone } from './sipPhone';
 
@@ -8,7 +7,7 @@ import { useSipPhone } from './sipPhone';
 export function useSipRegistration() {
   const token = useSession((s) => s.token);
   const loginMode = useSession((s) => s.loginMode);
-  const wanted = USE_BACKEND && !!token && loginMode === 'webrtc';
+  const wanted = !!token && loginMode === 'webrtc';
 
   useEffect(() => {
     if (!wanted) return;

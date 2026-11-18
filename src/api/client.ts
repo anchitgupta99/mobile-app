@@ -1,8 +1,6 @@
 import type {
   Agent,
   AgentStatus,
-  CallMode,
-  CallModePreference,
   CallRecord,
   Campaign,
   Contact,
@@ -12,18 +10,16 @@ import type {
   DispositionPayload,
   DispositionPrefs,
   LoginMode,
-  NetworkSample,
   ServerConfig,
   Task,
   TimelineEvent,
 } from '@/domain/types';
 import type { Analytics } from '@/domain/analytics';
-import { findPath, pathLabel } from '@/domain/dispositions';
 import { findPhoneMaskRule, type PhoneMaskRule } from '@/domain/phoneMask';
-import { agent, buildSeed, campaigns as demoCampaigns, dispositionConfig, serverConfig } from '@/mocks/seed';
+// The Contacts tab's sample data: the only part of the app not on the server yet
+import { buildSeed } from '@/mocks/seed';
 import { ApiError } from './errors';
-import { mobileRequest, USE_BACKEND } from './http';
-import { isOnline, useNetwork } from './network';
+import { mobileRequest } from './http';
 
 export { ApiError };
 
@@ -66,8 +62,8 @@ export type WebphoneConfig = {
 
 /** GET /v1/api/agent/mobile/campaigns (the web's /api/tenant/agent/campaigns); only the fields the app reads */
 type BackendCampaigns = {
-  campaigns: { id: string; name: string; dial_type: string; wrap_up_time: number | null }[];
-  pred_groups?: { title: string; campaigns: { id: string }[] };
+  campaigns: { id: string; name: string; dial_type: string; wrap_up_time: number | null; allow_manual_calls?: boolean | null }[];
+  pred_groups?: { title: string; campaigns: { id: string; allow_manual_calls?: boolean | null }[] };
   default_campaign_id: string | null;
   allow_campaign_selection: boolean | null;
 };
@@ -177,11 +173,46 @@ type BackendCallRow = {
   leadId: string | null;
 };
 
+/** GET / PUT /v1/api/agent/mobile/profile (the web's /api/tenant/profile/me) */
+type BackendProfile = {
+  fullName?: string | null;
+  email?: string | null;
+  mobile?: string | null;
+  role?: string | null;
+  createdAt?: string | null;
+  supervisorName?: string | null;
+  roleProfile?: { title?: string | null; supervisor_name?: string | null } | null;
+};
+
+/** What the profile screen shows, read as the web's profile window reads it */
+export type AgentProfile = {
+  fullName: string;
+  email: string;
+  mobile: string;
+  /** The web's role label: the role profile's title, else the role, else "Agent" */
+  roleLabel: string;
+  /** Empty when the server has none */
+  supervisor: string;
+  createdAt: string | null;
+};
+
+function toProfile(p: BackendProfile): AgentProfile {
+  return {
+    fullName: p.fullName ?? '',
+    email: p.email ?? '',
+    mobile: p.mobile ?? '',
+    roleLabel: p.roleProfile?.title || p.role || 'Agent',
+    supervisor: p.supervisorName || p.roleProfile?.supervisor_name || '',
+    createdAt: p.createdAt ?? null,
+  };
+}
+
 /** GET /v1/api/agent/mobile/calls/context (the web's /api/call/call-context) */
 type BackendCallContext = {
   exists?: boolean;
   leadId?: string | null;
   listId?: string | null;
+  listName?: string | null;
   prefix?: string | null;
   groups?: { fields?: { field_key?: string; field_type?: string; validation_rules?: unknown }[] | null }[];
   values?: Record<string, unknown>;
@@ -193,6 +224,8 @@ export type CallContext = {
   exists: boolean;
   leadId: string | null;
   listId: string | null;
+  /** The lead's list, shown on the call screen as the web's header shows it (empty without a lead in the campaign) */
+  listName: string;
   prefix: string | null;
   /** The lead's name as the server shows it (masked when the template masks it); empty without a lead */
   name: string;
@@ -249,7 +282,6 @@ function toCallRecord(r: BackendCallRow): CallRecord {
     campaignId: r.campaign_id,
     campaignName: r.campaign_name ?? undefined,
     leadId: r.leadId,
-    fallbackUsed: false,
     updatedAt: historyTime(r.ended_at) ?? startedAt,
   };
 }
@@ -359,18 +391,11 @@ function breakIcon(name: string) {
   return 'free-breakfast';
 }
 
+/** The Contacts tab's sample contacts and their timeline, kept in memory (not on the server yet) */
 const db = buildSeed();
 const idempotency = new Map<string, unknown>();
 
-function latency() {
-  const weak = useNetwork.getState().quality === 'weak';
-  return (weak ? 600 : 150) + Math.random() * (weak ? 900 : 250);
-}
-
 async function request<T>(fn: () => T): Promise<T> {
-  if (!isOnline()) throw new ApiError('offline', 'No network connection');
-  await new Promise((r) => setTimeout(r, latency()));
-  if (!isOnline()) throw new ApiError('offline', 'No network connection');
   return structuredCloneSafe(fn());
 }
 
@@ -394,52 +419,35 @@ const now = () => new Date().toISOString();
 export const api = {
   auth: {
     async login(loginId: string, password: string, mode: LoginMode) {
-      if (USE_BACKEND) {
-        // The backend calls the in-app webphone "web" (and the phone line "mobile")
-        const res = await mobileRequest<BackendLogin>('POST', '/auth/login', {
-          username: loginId,
-          password,
-          mode: mode === 'webrtc' ? 'web' : 'mobile',
-        });
-        return { accessToken: res.token, agent: toAgent(res.user) };
-      }
-      return request(() => {
-        if (loginId.length < 3 || password.length < 4) {
-          throw new ApiError('unauthorized', 'Login ID or password is incorrect');
-        }
-        return { accessToken: `at_${Date.now()}`, agent: { ...agent, loginId } };
+      // The backend calls the in-app webphone "web" (and the phone line "mobile")
+      const res = await mobileRequest<BackendLogin>('POST', '/auth/login', {
+        username: loginId,
+        password,
+        mode: mode === 'webrtc' ? 'web' : 'mobile',
       });
+      return { accessToken: res.token, agent: toAgent(res.user) };
     },
     /** Ends the agent's session on the server; needs the token still set */
     async logout() {
-      if (USE_BACKEND) await mobileRequest('POST', '/auth/logout', {});
+      await mobileRequest('POST', '/auth/logout', {});
     },
     /**
      * Forgot password, as the web (services/auth/forgotPasswordService.ts, 20 s limit): a code to the agent's
      * registered email for their email or username, the code exchanged for a reset token, then the new password.
      */
     requestPasswordReset(identifier: string): Promise<{ maskedEmail: string; resendIn: number }> {
-      if (USE_BACKEND) {
-        return mobileRequest('POST', '/auth/forgot-password/request-otp', { identifier }, { timeoutMs: RESET_TIMEOUT_MS });
-      }
-      return request(() => ({ maskedEmail: identifier, resendIn: 30 }));
+      return mobileRequest('POST', '/auth/forgot-password/request-otp', { identifier }, { timeoutMs: RESET_TIMEOUT_MS });
     },
     verifyResetCode(identifier: string, otp: string): Promise<{ resetToken: string; rules?: PasswordRules }> {
-      if (USE_BACKEND) {
-        return mobileRequest('POST', '/auth/forgot-password/verify-otp', { identifier, otp }, { timeoutMs: RESET_TIMEOUT_MS });
-      }
-      return request(() => ({ resetToken: `rst_${identifier}_${otp}` }));
+      return mobileRequest('POST', '/auth/forgot-password/verify-otp', { identifier, otp }, { timeoutMs: RESET_TIMEOUT_MS });
     },
     resetPassword(resetToken: string, newPassword: string, confirmPassword: string): Promise<{ success: boolean }> {
-      if (USE_BACKEND) {
-        return mobileRequest(
-          'POST',
-          '/auth/forgot-password/reset',
-          { resetToken, newPassword, confirmPassword },
-          { timeoutMs: RESET_TIMEOUT_MS },
-        );
-      }
-      return request(() => ({ success: true }));
+      return mobileRequest(
+        'POST',
+        '/auth/forgot-password/reset',
+        { resetToken, newPassword, confirmPassword },
+        { timeoutMs: RESET_TIMEOUT_MS },
+      );
     },
   },
 
@@ -449,15 +457,8 @@ export const api = {
     },
   },
 
-  devices: {
-    register(body: { platform: string; fcmToken: string; voipToken: string | null }) {
-      return request(() => ({ deviceId: `dev_${body.platform}_${Date.now().toString(36)}` }));
-    },
-  },
-
   campaigns: {
     async list(): Promise<{ items: Campaign[]; defaultId: string | null; allowSelection: boolean }> {
-      if (!USE_BACKEND) return { items: demoCampaigns, defaultId: null, allowSelection: true };
       const res = await mobileRequest<BackendCampaigns>('GET', '/campaigns');
       const items: Campaign[] = res.campaigns.map((c) => ({
         id: c.id,
@@ -466,13 +467,36 @@ export const api = {
         listName: '',
         // The web's fallback when the campaign has none
         wrapUpSeconds: c.wrap_up_time || 30,
+        dialType: c.dial_type,
+        // As the web: manual calls are allowed unless the campaign turned them off
+        allowManualCalls: c.allow_manual_calls !== false,
       }));
-      if (res.pred_groups?.campaigns.length) items.push({ id: PREDICTIVE_GROUP, name: res.pred_groups.title, kind: 'auto', listName: '' });
+      const group = res.pred_groups?.campaigns ?? [];
+      if (group.length) {
+        items.push({
+          id: PREDICTIVE_GROUP,
+          name: res.pred_groups!.title,
+          kind: 'auto',
+          listName: '',
+          // As the web's top bar: the group allows manual calls when any of its campaigns does
+          allowManualCalls: group.some((c) => c.allow_manual_calls !== false),
+        });
+      }
       return { items, defaultId: res.default_campaign_id, allowSelection: res.allow_campaign_selection !== false };
+    },
+    /**
+     * A campaign's call script, as the web's call page reads it (GET /api/tenant/campaigns/:id): shown only when the
+     * admin turned it on (script_enabled), with its text (script_text)
+     */
+    async script(campaignId: string): Promise<{ enabled: boolean; text: string }> {
+      const res = await mobileRequest<{ campaign?: { script_enabled?: boolean | null; script_text?: string | null } }>(
+        'GET',
+        `/campaigns/${encodeURIComponent(campaignId)}`,
+      );
+      return { enabled: res.campaign?.script_enabled === true, text: res.campaign?.script_text || '' };
     },
     /** Makes it the agent's active campaign on the server, which puts them on pause until they go online */
     async select(campaignId: string, opts: { oldCampaignId?: string; initial?: boolean } = {}) {
-      if (!USE_BACKEND) return;
       await mobileRequest('POST', '/campaign', {
         campaign_id: campaignId,
         old_campaign_id: opts.oldCampaignId || undefined,
@@ -484,34 +508,26 @@ export const api = {
   agents: {
     /** READY in the campaign: the server starts routing its calls to this agent's webphone */
     async goOnline(campaignId: string) {
-      if (!USE_BACKEND) return;
       // "web" is the backend's name for the webphone login mode
       await mobileRequest('POST', '/go-online', { campaignId, mode: 'web' });
     },
     /**
-     * Against the backend, as the web's status menu: Online is go-online in the campaign (which also ends a
-     * running break) and a break is break/start with the break type's id. There is no "offline" on the
-     * server; signing out is the way off.
+     * As the web's status menu: Online is go-online in the campaign (which also ends a running break) and a
+     * break is break/start with the break type's id. There is no "offline" on the server; signing out is the way off.
      */
     async setStatus(status: AgentStatus, breakCode: string | null = null, campaignId?: string) {
-      if (USE_BACKEND) {
-        if (status === 'available' && campaignId) await api.agents.goOnline(campaignId);
-        if (status === 'break' && breakCode) await mobileRequest('POST', '/break/start', { breakTypeId: breakCode });
-        return { status, breakCode, at: now() };
-      }
-      return request(() => ({ status, breakCode, at: now() }));
+      if (status === 'available' && campaignId) await api.agents.goOnline(campaignId);
+      if (status === 'break' && breakCode) await mobileRequest('POST', '/break/start', { breakTypeId: breakCode });
+      return { status, breakCode, at: now() };
     },
     /** Whether the dialer sends this agent calls by itself */
     async setAutoCall(enabled: boolean) {
       const res = await mobileRequest<{ auto_call_enabled: boolean }>('PATCH', '/auto-call', { auto_call_enabled: enabled });
       return res.auto_call_enabled;
     },
-    heartbeat(sample: NetworkSample) {
-      return request(() => ({ ok: true, sample }));
-    },
   },
 
-  /** The webphone's real calls (backend only); the mock `calls` below keeps the demo's history and controls */
+  /** The webphone's calls: the server dials, rings, holds, transfers and conferences them */
   liveCalls: {
     /** The server dials the number and rings this agent's webphone; returns the call's UUID, lead and actual campaign */
     async manual(number: string, campaignId: string, type: 'MANUAL' | 'CALLBACK' = 'MANUAL') {
@@ -584,6 +600,7 @@ export const api = {
         exists: res.exists === true,
         leadId: res.leadId ?? null,
         listId: res.listId ?? null,
+        listName: res.listName?.trim() || '',
         prefix: res.prefix ?? null,
         name: typeof name === 'string' ? name.trim() : '',
         maskRule: findPhoneMaskRule(res.groups),
@@ -596,94 +613,48 @@ export const api = {
   },
 
   calls: {
-    async list(updatedSince?: string) {
-      if (USE_BACKEND) {
-        // The server's own history (agent_call_history, kept across logins) for the last HISTORY_DAYS days, as the
-        // web's History page asks for it: fromDate and toDate together (the server ignores one without the
-        // other), page by page. It has no delta, so it's the whole window; the store sorts it newest first.
-        const day = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-        const fromDate = day(new Date(Date.now() - HISTORY_DAYS * 86400000));
-        const toDate = day(new Date());
-        const rows: BackendCallRow[] = [];
-        for (let page = 1; page <= HISTORY_MAX_PAGES; page++) {
-          const res = await mobileRequest<{ data: BackendCallRow[]; pagination?: { totalPages?: number } }>(
-            'GET',
-            `/calls/history?page=${page}&limit=${HISTORY_PAGE_SIZE}&fromDate=${fromDate}&toDate=${toDate}`,
-          );
-          rows.push(...(res.data ?? []));
-          if (page >= (res.pagination?.totalPages ?? 1) || (res.data ?? []).length < HISTORY_PAGE_SIZE) break;
-        }
-        return { items: rows.map(toCallRecord), cursor: now() };
+    async list() {
+      // The server's own history (agent_call_history, kept across logins) for the last HISTORY_DAYS days, as the
+      // web's History page asks for it: fromDate and toDate together (the server ignores one without the other),
+      // page by page. It has no delta, so it's the whole window; the store sorts it newest first.
+      const day = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const fromDate = day(new Date(Date.now() - HISTORY_DAYS * 86400000));
+      const toDate = day(new Date());
+      const rows: BackendCallRow[] = [];
+      for (let page = 1; page <= HISTORY_MAX_PAGES; page++) {
+        const res = await mobileRequest<{ data: BackendCallRow[]; pagination?: { totalPages?: number } }>(
+          'GET',
+          `/calls/history?page=${page}&limit=${HISTORY_PAGE_SIZE}&fromDate=${fromDate}&toDate=${toDate}`,
+        );
+        rows.push(...(res.data ?? []));
+        if (page >= (res.pagination?.totalPages ?? 1) || (res.data ?? []).length < HISTORY_PAGE_SIZE) break;
       }
-      return request(() => ({ items: since(db.calls, updatedSince), cursor: now() }));
+      return { items: rows.map(toCallRecord), cursor: now() };
     },
-    start(body: { number: string; mode: CallModePreference; contactId: string | null; resolvedMode: CallMode }) {
-      return request(() => ({ callId: `cl_${Date.now().toString(36)}`, mode: body.resolvedMode }));
+    /** The call's recording: the public link the server's history carries */
+    async recording(_callId: string, recordingUrl?: string | null) {
+      if (!recordingUrl) throw new ApiError('validation', 'No recording for this call');
+      return { url: recordingUrl, expiresAt: null as string | null };
     },
-    control(callId: string, action: 'hold' | 'unhold' | 'mute' | 'unmute' | 'end' | 'dtmf', value?: string) {
-      return request(() => ({ callId, action, value, ok: true }));
-    },
-    async recording(callId: string, recordingUrl?: string | null) {
-      if (USE_BACKEND) {
-        if (!recordingUrl) throw new ApiError('validation', 'No recording for this call');
-        return { url: recordingUrl, expiresAt: null as string | null };
-      }
-      return request(() => ({
-        url: `https://media.claritel.ai/rec/${callId}.opus?sig=${Math.random().toString(36).slice(2)}&exp=${Date.now() + 300000}`,
-        expiresAt: new Date(Date.now() + 300000).toISOString(),
-      }));
-    },
-    async upsert(idemKey: string, call: CallRecord) {
-      // The server writes its own call history as calls end
-      if (USE_BACKEND) return call;
-      return request(() =>
-        once(idemKey, () => {
-          const i = db.calls.findIndex((c) => c.id === call.id);
-          const row = { ...call, updatedAt: now() };
-          if (i >= 0) db.calls[i] = row;
-          else db.calls.unshift(row);
-          return row;
-        }),
-      );
-    },
-    async disposition(idemKey: string, body: DispositionPayload) {
-      // Saves it on the server, which also makes the agent READY again (the web's /api/leads/disposition)
-      if (USE_BACKEND && body.server) {
-        await mobileRequest('POST', '/dispositions', body.server);
-        return { saved: true, callId: body.callId };
-      }
-      return request(() =>
-        once(idemKey, () => {
-          const c = db.calls.find((x) => x.id === body.callId);
-          if (c) {
-            // Store the readable path like the app does, so a sync never swaps the label for the code
-            const path = findPath(dispositionConfig.dispositions, body.code);
-            c.disposition = path ? pathLabel(path) : body.code;
-            c.notes = body.notes;
-            c.updatedAt = now();
-          }
-          return { saved: true, callId: body.callId };
-        }),
-      );
+    /** Saves it on the server, which also makes the agent READY again (the web's /api/leads/disposition) */
+    async disposition(body: DispositionPayload) {
+      await mobileRequest('POST', '/dispositions', body.server);
+      return { saved: true, callId: body.callId };
     },
   },
 
   dispositions: {
     /** acwSeconds: the campaign's wrap-up time, which the backend sends with the campaign list */
     async config(campaignId: string, acwSeconds = 30): Promise<DispositionConfig> {
-      if (USE_BACKEND) {
-        const empty = { campaignId, mandatory: true, acwSeconds, dispositions: [], script: [] };
-        // An auto-dial group has no dispositions of its own; each call brings its real campaign
-        if (!UUID.test(campaignId)) return empty;
-        const res = await mobileRequest<{ data: BackendDisposition[] }>(
-          'GET',
-          `/dispositions?campaignId=${encodeURIComponent(campaignId)}`,
-        );
-        const rows = res.data ?? [];
-        return { ...empty, dispositions: toDispositionTree(rows), prefs: toPrefs(rows) };
-      }
-      // One tree for every campaign in the mock; the id is echoed so the app can tell which campaign it holds
-      return request(() => ({ ...dispositionConfig, campaignId }));
+      const empty = { campaignId, mandatory: true, acwSeconds, dispositions: [] };
+      // An auto-dial group has no dispositions of its own; each call brings its real campaign
+      if (!UUID.test(campaignId)) return empty;
+      const res = await mobileRequest<{ data: BackendDisposition[] }>(
+        'GET',
+        `/dispositions?campaignId=${encodeURIComponent(campaignId)}`,
+      );
+      const rows = res.data ?? [];
+      return { ...empty, dispositions: toDispositionTree(rows), prefs: toPrefs(rows) };
     },
   },
 
@@ -719,6 +690,35 @@ export const api = {
         breaks: (shift.break_time.break_details ?? []).map((b) => ({ label: b.name, seconds: seconds(b.duration) })),
         aht: { overall: answered ? Math.round((callTime.talk + callTime.hold + callTime.wrap) / answered) : 0 },
       };
+    },
+  },
+
+  /** The agent's own profile, as the web's profile window reads, saves and changes it (/api/tenant/profile/...) */
+  profile: {
+    /** campaignId: the agent's campaign, which the server reads the supervisor from */
+    async get(campaignId?: string): Promise<AgentProfile> {
+      const q = campaignId && UUID.test(campaignId) ? `?campaignId=${encodeURIComponent(campaignId)}` : '';
+      const res = await mobileRequest<{ profile: BackendProfile }>('GET', `/profile${q}`);
+      return toProfile(res.profile);
+    },
+    /** Name, email and mobile, as the web sends them (the server saves the name and mobile) */
+    async update(body: { fullName: string; email: string; mobile: string }): Promise<AgentProfile> {
+      const res = await mobileRequest<{ profile: BackendProfile }>('PUT', '/profile', body);
+      return toProfile(res.profile);
+    },
+    changePassword(body: { currentPassword: string; newPassword: string; confirmPassword: string }) {
+      return mobileRequest('POST', '/profile/change-password', body);
+    },
+  },
+
+  /** A lead's fields for the call history's "Lead details", as the web's "View Lead Profile" loads them */
+  leads: {
+    async details(leadId: string): Promise<Record<string, unknown> | null> {
+      const res = await mobileRequest<{ success?: boolean; data?: Record<string, unknown> | null }>(
+        'GET',
+        `/lead-details?leadId=${encodeURIComponent(leadId)}`,
+      );
+      return res.data ?? null;
     },
   },
 
@@ -766,20 +766,16 @@ export const api = {
 
   config: {
     async get(): Promise<ServerConfig> {
-      if (USE_BACKEND) {
-        // The tenant's break types; a break type's id is what break/start takes
-        const res = await mobileRequest<{ breakTypes: BackendBreakType[] }>('GET', '/break-types');
-        return {
-          ...serverConfig,
-          breakTypes: (res.breakTypes ?? []).map((b) => ({
-            code: b.id,
-            label: b.name,
-            icon: breakIcon(b.name),
-            limitMinutes: b.max_duration_min ?? null,
-          })),
-        };
-      }
-      return request(() => serverConfig);
+      // The tenant's break types; a break type's id is what break/start takes
+      const res = await mobileRequest<{ breakTypes: BackendBreakType[] }>('GET', '/break-types');
+      return {
+        breakTypes: (res.breakTypes ?? []).map((b) => ({
+          code: b.id,
+          label: b.name,
+          icon: breakIcon(b.name),
+          limitMinutes: b.max_duration_min ?? null,
+        })),
+      };
     },
   },
 
@@ -803,43 +799,30 @@ export const api = {
   },
 
   /**
-   * The Callbacks tab. Against the backend these are the agent's scheduled callbacks: open ones only (overdue
-   * included), done means removed as the web does once one is called back, and snoozing reschedules it.
-   * Reminders made on this phone (say for a missed inbound call) aren't on the server and stay here.
+   * The Callbacks tab: the agent's scheduled callbacks, open ones only (overdue included); done means removed as
+   * the web does once one is called back, and snoozing reschedules it. One made with the tab's "New" button isn't on
+   * the server and stays on this phone.
    */
   tasks: {
-    async list(updatedSince?: string) {
-      if (USE_BACKEND) {
-        const res = await mobileRequest<{ data: BackendCallback[] }>('GET', '/callbacks?status=SCHEDULED&limit=100');
-        return { items: (res.data ?? []).map(toTask), cursor: now() };
-      }
-      return request(() => ({ items: since(db.tasks, updatedSince), cursor: now() }));
+    async list() {
+      const res = await mobileRequest<{ data: BackendCallback[] }>('GET', '/callbacks?status=SCHEDULED&limit=100');
+      return { items: (res.data ?? []).map(toTask), cursor: now() };
     },
-    async upsert(idemKey: string, task: Task) {
-      if (USE_BACKEND) {
-        if (!UUID.test(task.id)) return task;
-        if (task.done) {
-          await mobileRequest('DELETE', `/callbacks/${task.id}`);
-          return task;
-        }
-        const at = new Date(task.dueAt);
-        const pad = (n: number) => String(n).padStart(2, '0');
-        await mobileRequest('PUT', `/callbacks/${task.id}`, {
-          date: `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`,
-          time: `${pad(at.getHours())}:${pad(at.getMinutes())}`,
-          // No remarks, as the web's reschedule sends none: the callback's own stay as they are on the server
-        });
+    async upsert(_idemKey: string, task: Task) {
+      // Made on this phone (the tab's "New" button): not on the server
+      if (!UUID.test(task.id)) return task;
+      if (task.done) {
+        await mobileRequest('DELETE', `/callbacks/${task.id}`);
         return task;
       }
-      return request(() =>
-        once(idemKey, () => {
-          const i = db.tasks.findIndex((t) => t.id === task.id);
-          const row = { ...task, updatedAt: now() };
-          if (i >= 0) db.tasks[i] = row;
-          else db.tasks.unshift(row);
-          return row;
-        }),
-      );
+      const at = new Date(task.dueAt);
+      const pad = (n: number) => String(n).padStart(2, '0');
+      await mobileRequest('PUT', `/callbacks/${task.id}`, {
+        date: `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`,
+        time: `${pad(at.getHours())}:${pad(at.getMinutes())}`,
+        // No remarks, as the web's reschedule sends none: the callback's own stay as they are on the server
+      });
+      return task;
     },
   },
 

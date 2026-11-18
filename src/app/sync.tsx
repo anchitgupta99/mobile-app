@@ -1,7 +1,6 @@
 import { router } from 'expo-router';
 import { ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useNetwork } from '@/api/network';
 import { alertDialog } from '@/components/feedback';
 import { Button, Card, Divider, EmptyState, Icon, IconButton, T, type IconName } from '@/components/ui';
 import { formatRelative } from '@/domain/format';
@@ -10,10 +9,8 @@ import { useOutbox, type OutboxItem } from '@/store/outbox';
 import { useTheme } from '@/theme';
 
 const icons: Record<OutboxItem['kind'], IconName> = {
-  disposition: 'fact-check',
   task: 'task-alt',
   contact: 'person',
-  call: 'call',
   status: 'toggle-on',
 };
 
@@ -39,7 +36,6 @@ export default function Sync() {
   const lastSyncAt = useData((s) => s.lastSyncAt);
   const syncError = useData((s) => s.syncError);
   const refreshing = useData((s) => s.refreshing);
-  const quality = useNetwork((s) => s.quality);
 
   return (
     <View style={{ flex: 1, backgroundColor: c.page, paddingBottom: insets.bottom }}>
@@ -52,24 +48,22 @@ export default function Sync() {
       <ScrollView contentContainerStyle={{ padding: 16, paddingTop: 0, gap: 16 }}>
         <Card style={{ flexDirection: 'row', gap: 12, alignItems: 'center' }}>
           <Icon
-            name={quality === 'offline' ? 'cloud-off' : syncError ? 'sync-problem' : 'cloud-done'}
-            color={quality === 'offline' ? c.warningFg : syncError ? c.errorFg : c.successFg}
+            name={syncError ? 'sync-problem' : 'cloud-done'}
+            color={syncError ? c.errorFg : c.successFg}
             size={28}
           />
           <View style={{ flex: 1 }}>
             <T v="bodyStrong">
-              {quality === 'offline'
-                ? 'You are offline'
-                : syncing
-                  ? 'Syncing…'
-                  : items.some((i) => i.parked)
-                    ? 'Some changes need your attention'
-                    : items.length
-                      ? 'Waiting to sync'
-                      : 'Everything is synced'}
+              {syncing
+                ? 'Syncing…'
+                : items.some((i) => i.parked)
+                  ? 'Some changes need your attention'
+                  : items.length
+                    ? 'Waiting to sync'
+                    : 'Everything is synced'}
             </T>
             <T v="caption">{lastSyncAt ? `Last synced ${formatRelative(lastSyncAt)}` : 'Not synced yet'}</T>
-            {(lastError || syncError) && quality !== 'offline' && (
+            {(lastError || syncError) && (
               <T v="caption" color={c.errorFg}>
                 {lastError ?? `Couldn't refresh: ${syncError}`}
               </T>
@@ -119,7 +113,6 @@ export default function Sync() {
           icon="sync"
           full
           loading={syncing || refreshing}
-          disabled={quality === 'offline'}
           onPress={() => void useData.getState().sync()}
         />
       </ScrollView>

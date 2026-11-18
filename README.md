@@ -1,6 +1,6 @@
 # Claritel Agent (mobile)
 
-React Native (Expo SDK 57, Expo Router) app for field agents, built from _PRD: Agent Mobile App_. It covers the MVP agent loop: ring or dial, screen pop, in call, wrap-up, then available again. It runs against an in-app mock API shaped like the endpoints in the PRD.
+React Native (Expo SDK 57, Expo Router) app for field agents, built from _PRD: Agent Mobile App_. It covers the MVP agent loop: ring or dial, screen pop, in call, wrap-up, then available again. It runs against the dialer backend's agent mobile routes; only the Contacts tab still shows sample data.
 
 Colours, type and radii come from the Claritel admin app (`claritel dialer admin/src/app/globals.css` and `docs/reference/brand-colors.md`). The app uses the same light and dark roles, Roboto, and Material icons.
 
@@ -24,7 +24,7 @@ The app talks to the dialer backend's agent mobile routes (`/v1/api/agent/mobile
 
 The live socket (`/ws`) uses the API URL's domain automatically (`https://<domain>/backend` → `https://<domain>`), so one value is enough. `EXPO_PUBLIC_SOCKET_URL` is only for a socket on a different domain. For an APK, set the value in the build profile's `env` in `eas.json`, since EAS does not see `.env.local` and the value is fixed into the app at build time.
 
-Restart with `npx expo start -c` after changing it. With no URL the app runs on its in-app demo data.
+Restart with `npx expo start -c` after changing it. The app needs the URL: without it every request fails with "The server address is not set".
 
 **APK on the deployed backend** (`eas build --profile preview --platform android`): the `preview` profile in `eas.json` builds an installable APK with `EXPO_PUBLIC_API_URL=https://dialer.claritel.ai/backend`, so it works on any network. Changing the server means changing that value and building again.
 
@@ -32,13 +32,9 @@ The webphone (WebRTC) and the call audio routing need the development build (`ea
 
 ### Flow
 
-1. **Login**: login ID and password, with a SIP (webphone) or Mobile (phone-line) tab. There is no OTP step. Against the mock backend any login ID of 3+ characters and a 4+ character password works; the ID is prefilled in demo mode.
+1. **Login**: login ID and password, with a SIP (webphone) or Mobile (phone-line) tab. There is no OTP step.
 2. **Preflight** ("Ready to go live?"): app permissions (microphone, notifications) plus internet, webphone and headset checks. **Go live** sets the agent Available and opens the tabs; **Log out** returns to login. The same screen is reachable later from Profile → Diagnostics.
 3. **Tabs**: Home, Calls, Dialer, Contacts and Callbacks, with the status pill and menu in the top bar.
-
-### Demo mode
-
-`IS_DEMO` in `src/mocks/demo.ts` is true in development (`__DEV__`) unless `EXPO_PUBLIC_DEMO=false`, and always false when the app has a backend (`EXPO_PUBLIC_API_URL`); set `EXPO_PUBLIC_DEMO=true` to force it in a release build without a backend. It gates everything that only makes sense against the in-memory mock backend: the prefilled login ID and prototype hints, the timer-based preflight checks with fake device names and level meter, and the simulated transfer outcomes. With it off, preflight shows "Not available yet" for checks that have no real implementation and the Go live button only waits on the microphone permission.
 
 ## Motion, haptics and sound
 
@@ -57,10 +53,10 @@ Gestures: drag sheets down to close, swipe call rows (right: call back, left: di
 | `src/components/`        | Shared building blocks: `ui.tsx`, `TopBar` (status pill), `Sheet`, `feedback` (toasts and dialogs), rows                                                                       |
 | `src/components/motion/` | Reanimated and Gesture Handler primitives: `PressableScale`, `AnimatedSheet`, `SwipeRow`, `FadeInItem`, `RollingDigits`                                                        |
 | `src/feedback/`          | Semantic feedback: `feedback('event')` maps to a haptic and a UI sound. `events.ts` is the tuning table and `gate.ts` holds the gating rules (settings, live call, web).       |
-| `src/api/`               | Mock API (`client.ts`), simulated network (`network.ts`) and the WebSocket event bus (`realtime.ts`)                                                                           |
-| `src/telephony/`         | The `CallAdapter` interface, VoIP and bridge adapters, the network check for auto mode, compliance checks (DNC and calling hours), and the call state machine (`callStore.ts`) |
+| `src/api/`               | The backend client (`client.ts`, `http.ts`), the live socket (`socket.ts`) and the event stream (`events.ts`)                                                                  |
+| `src/telephony/`         | The webphone (`sip/`), its call adapter (`voip.ts`) and the call state machine (`callStore.ts`)                                                                               |
 | `src/store/`             | Session, settings, the local data cache (delta sync), and the offline outbox with idempotency keys                                                                             |
-| `src/mocks/seed.ts`      | Demo contacts, calls, tasks and disposition config                                                                                                                             |
+| `src/mocks/seed.ts`      | The Contacts tab's sample contacts and their activity timeline (not on the server yet)                                                                                        |
 
 ## Requirement coverage (MVP)
 

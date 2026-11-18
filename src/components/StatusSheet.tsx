@@ -1,8 +1,6 @@
 import { ActivityIndicator, Pressable, View } from 'react-native';
 import { create } from 'zustand';
-import { USE_BACKEND } from '@/api/http';
 import type { AgentStatus, BreakType } from '@/domain/types';
-import { serverConfig } from '@/mocks/seed';
 import { useData } from '@/store/data';
 import { useSession } from '@/store/session';
 import { useTheme } from '@/theme';
@@ -19,8 +17,8 @@ export const useStatusSheet = create<SheetState>((set) => ({
 }));
 
 export function useBreakTypes(): BreakType[] {
-  // Against the backend only the tenant's own break types; never the samples
-  return useData((s) => s.server.breakTypes) ?? (USE_BACKEND ? [] : serverConfig.breakTypes);
+  // The tenant's own break types, from the server
+  return useData((s) => s.server.breakTypes) ?? [];
 }
 
 export function useStatusLabel() {
@@ -33,14 +31,12 @@ export function useStatusLabel() {
     breakType: brk,
     // On the server an agent who isn't online or on a break is PAUSED (after login, a campaign switch or a
     // dropped connection), as the web shows it
-    label: status === 'available' ? 'Online' : status === 'offline' ? (USE_BACKEND ? 'Paused' : 'Offline') : (brk?.label ?? 'On break'),
+    label: status === 'available' ? 'Online' : status === 'offline' ? 'Paused' : (brk?.label ?? 'On break'),
     hint:
       status === 'available'
         ? 'Calls ring on your device'
         : status === 'offline'
-          ? USE_BACKEND
-            ? 'Go online to receive calls'
-            : 'You will not receive calls'
+          ? 'Go online to receive calls'
           : 'No new calls; follow-ups still remind you',
   };
 }
@@ -157,18 +153,6 @@ export function StatusSheet() {
           />
         ))}
       </View>
-      {/* The web has no "offline" status to set: an agent is online, on a break, or signs out */}
-      {!breakOnly && !USE_BACKEND && (
-        <View style={{ marginTop: 8 }}>
-          <Option
-            dot={c.ink3}
-            title="Offline"
-            body="You will not receive calls"
-            on={status === 'offline'}
-            onPress={() => pick('offline')}
-          />
-        </View>
-      )}
     </Sheet>
   );
 }

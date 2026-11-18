@@ -4,13 +4,11 @@ import { KeyboardAvoidingView, Linking, Pressable, ScrollView, TextInput, View }
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ApiError } from '@/api/client';
-import { USE_BACKEND } from '@/api/http';
 import { InfoTip } from '@/components/InfoTip';
 import { Logo } from '@/components/Logo';
 import { helpText } from '@/domain/helpText';
 import { Button, Field, Icon, IconButton, Segmented, T } from '@/components/ui';
 import type { LoginMode } from '@/domain/types';
-import { IS_DEMO } from '@/mocks/demo';
 import { useSession } from '@/store/session';
 import { useTheme } from '@/theme';
 import { duration } from '@/theme/motion';
@@ -34,8 +32,7 @@ export default function Login() {
   const revokedReason = useSession((s) => s.revokedReason);
   const [mode, setMode] = useState<LoginMode>('webrtc');
   // The mock backend accepts any agent; prefill so a demo starts in one tap
-  const mockLogin = IS_DEMO && !USE_BACKEND;
-  const [loginId, setLoginId] = useState(mockLogin ? 'priya.sharma' : '');
+  const [loginId, setLoginId] = useState('');
   const [password, setPassword] = useState('');
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -186,11 +183,6 @@ export default function Login() {
               {SUPPORT_EMAIL}
             </T>
           </T>
-          {mockLogin && (
-            <T v="caption" color={c.ink3} style={{ textAlign: 'center' }}>
-              Prototype accepts any login ID (3+ characters) and a 4+ character password.
-            </T>
-          )}
         </View>
       </ScrollView>
     </KeyboardAvoidingView>

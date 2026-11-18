@@ -1,8 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { api } from '@/api/client';
-import { USE_BACKEND } from '@/api/http';
 import type { Analytics, CustomRange, DateRange } from '@/domain/analytics';
-import { analyticsFor } from '@/mocks/analytics';
 
 const day = (d: Date) => {
   const pad = (n: number) => String(n).padStart(2, '0');
@@ -20,16 +18,14 @@ function daysOf(range: DateRange, custom: CustomRange): [string, string] {
   return [day(new Date(today.getTime() - (custom.days - 1) * 86400000)), day(today)];
 }
 
-/** The Home dashboard's numbers: the server's for the chosen range, or the demo's without a backend */
+/** The Home dashboard's numbers from the server, for the chosen range */
 export function useAgentAnalytics(range: DateRange, custom: CustomRange) {
   const [from, to] = daysOf(range, custom);
   const [data, setData] = useState<Analytics | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
-  const demo = useMemo(() => (USE_BACKEND ? null : analyticsFor(range, custom)), [range, custom]);
 
   useEffect(() => {
-    if (!USE_BACKEND) return;
     let gone = false;
     api.analytics
       .get(from, to)
@@ -45,5 +41,5 @@ export function useAgentAnalytics(range: DateRange, custom: CustomRange) {
   }, [from, to, attempt]);
 
   const reload = useCallback(() => setAttempt((n) => n + 1), []);
-  return demo ? { data: demo, error: null, reload } : { data, error, reload };
+  return { data, error, reload };
 }

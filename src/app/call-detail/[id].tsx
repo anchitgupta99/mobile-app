@@ -1,12 +1,11 @@
-import { router, useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from 'expo-router';
 import { ScrollView, View } from 'react-native';
 import { campaignName, useDispositionLabel } from '@/components/CallCard';
-import { ModeBadge } from '@/components/ModeBadge';
 import { ItemNotFound } from '@/components/ItemNotFound';
 import { PageHeader } from '@/components/PageHeader';
 import { PhoneText } from '@/components/PhoneText';
 import { RecordingPlayer } from '@/components/RecordingPlayer';
-import { Avatar, Button, Card, Divider, Icon, SectionHeader, StatusChip, T, type IconName } from '@/components/ui';
+import { Avatar, Button, Card, Divider, Icon, SectionHeader, T, type IconName } from '@/components/ui';
 import { formatDuration, formatWhen } from '@/domain/format';
 import { useDial } from '@/hooks/useDial';
 import { useSecureScreen } from '@/hooks/useSecureScreen';
@@ -33,7 +32,6 @@ export default function CallDetail() {
   const { c } = useTheme();
   const { id } = useLocalSearchParams<{ id: string }>();
   const call = useData((s) => s.calls.find((x) => x.id === id));
-  const contact = useData((s) => s.contacts.find((x) => x.id === call?.contactId));
   const dial = useDial();
   const dispositionLabel = useDispositionLabel();
 
@@ -45,23 +43,25 @@ export default function CallDetail() {
       </View>
     );
   }
+  // Whether the server gives this call a name; without one the number is the title
+  const named = !!call.customerName;
 
   return (
     <View style={{ flex: 1, backgroundColor: c.page }}>
       <PageHeader title="Call details" />
       <ScrollView contentContainerStyle={{ padding: 16, gap: 16, paddingBottom: 32 }}>
-        <Card
-          onPress={contact ? () => router.push(`/contact/${contact.id}`) : undefined}
-          style={{ flexDirection: 'row', gap: 14, alignItems: 'center' }}
-        >
-          <Avatar name={contact?.name ?? call.customerName ?? '#'} size={52} />
+        <Card style={{ flexDirection: 'row', gap: 14, alignItems: 'center' }}>
+          <Avatar name={call.customerName || '#'} size={52} />
           <View style={{ flex: 1, gap: 2 }}>
-            <T v="h3">{contact?.name ?? call.customerName ?? 'Unknown number'}</T>
-            {contact && <T v="caption">{contact.company}</T>}
-            {/* As the server shows it (masked per campaign); Call back dials the real number */}
-            <PhoneText number={call.displayNumber ?? call.number} v="caption" />
+            {/* The name if the server has one, else the number as the server shows it (masked per campaign);
+                Call back dials the real number */}
+            {named ? (
+              <T v="h3">{call.customerName}</T>
+            ) : (
+              <PhoneText number={call.displayNumber ?? call.number} v="h3" />
+            )}
+            {named && <PhoneText number={call.displayNumber ?? call.number} v="caption" />}
           </View>
-          {contact && <Icon name="chevron-right" color={c.ink3} />}
         </Card>
 
         {call.hasRecording && (
@@ -93,22 +93,6 @@ export default function CallDetail() {
               label="Ended by"
               value={call.disconnectedBy === 'agent' ? 'Agent' : call.disconnectedBy === 'customer' ? 'Customer' : '—'}
             />
-            <Divider />
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10 }}>
-              <Icon name="settings-phone" size={20} color={c.ink2} />
-              <T v="body" color={c.ink2} style={{ flex: 1 }}>
-                Mode
-              </T>
-              <ModeBadge mode={call.mode} />
-            </View>
-            {call.fallbackUsed && (
-              <>
-                <Divider />
-                <View style={{ paddingVertical: 10 }}>
-                  <StatusChip tone="info" icon="sim-card" label="App did not ring; phone line fallback used" />
-                </View>
-              </>
-            )}
             <Divider />
             <Fact
               icon="fact-check"
@@ -142,7 +126,6 @@ export default function CallDetail() {
           icon="call"
           variant="call"
           full
-          disabled={contact?.dnc}
           onPress={() => void dial({ number: call.number, contactId: call.contactId, source: 'history' })}
         />
       </ScrollView>

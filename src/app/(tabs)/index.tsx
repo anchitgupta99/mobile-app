@@ -1,7 +1,6 @@
 import { router } from 'expo-router';
 import { useMemo } from 'react';
 import { RefreshControl, ScrollView, View } from 'react-native';
-import { useNetwork } from '@/api/network';
 import { notify } from '@/components/feedback';
 import { Dashboard } from '@/components/Dashboard';
 import { ListPlaceholder } from '@/components/ListPlaceholder';
@@ -24,7 +23,6 @@ export default function Home() {
   const tasks = useData((s) => s.tasks);
   const { refreshing, onRefresh } = useRefresh();
   const pending = useOutbox((s) => s.items.length);
-  const quality = useNetwork((s) => s.quality);
   const { callTask, snooze } = useTaskActions();
 
   const next = useMemo(
@@ -55,10 +53,10 @@ export default function Home() {
 
       {pending > 0 && (
         <Card onPress={() => router.push('/sync')} style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-          <Icon name={quality === 'offline' ? 'cloud-off' : 'cloud-upload'} color={c.purple} />
+          <Icon name="cloud-upload" color={c.purple} />
           <View style={{ flex: 1 }}>
             <T v="bodyStrong">{pending} waiting to sync</T>
-            <T v="caption">{quality === 'offline' ? 'Saved on this phone. Syncs when you are back online.' : 'Sending now…'}</T>
+            <T v="caption">Sending now…</T>
           </View>
           <Icon name="chevron-right" color={c.ink3} />
         </Card>

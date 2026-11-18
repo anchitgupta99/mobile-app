@@ -1,10 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Platform, Pressable, ScrollView, View } from 'react-native';
+import { useCallback, useState } from 'react';
+import { ActivityIndicator, Platform, ScrollView, View } from 'react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { USE_BACKEND } from '@/api/http';
 import { helpText } from '@/domain/helpText';
-import { IS_DEMO } from '@/mocks/demo';
 import { useSipPhone } from '@/telephony/sip/sipPhone';
 import { feedback } from '@/feedback';
 import { usePermissions, usePermissionsStore, type PermissionKind, type PermissionState } from '@/hooks/usePermissions';
@@ -16,87 +14,30 @@ import { duration } from '@/theme/motion';
 import { confirmLogout } from './AppMenu';
 import { notify } from './feedback';
 import { InfoTip } from './InfoTip';
-import { Sheet } from './Sheet';
 import { Slider } from './Slider';
-import { Button, Card, Icon, StatusChip, T, tap, type IconName } from './ui';
+import { Button, Card, Icon, StatusChip, T, type IconName } from './ui';
 
 type CheckState = 'checking' | 'passed' | 'unavailable';
 
-/** Demo-only device lists: there is no native audio-device enumeration yet. */
-const mics = ['Default - Microphone Array (Realtek(R) Audio)', 'Headset Microphone (Jabra Evolve2 40)', 'Bluetooth Hands-Free (AirPods)'];
-const speakers = ['Default - Speakers (Realtek(R) Audio)', 'Headset Earphone (Jabra Evolve2 40)', 'Bluetooth Stereo (AirPods)'];
-
 /**
- * Internet, webphone and headset checks. In demo mode each one "passes" a little after the previous so
- * the agent can see them run. Outside demo there is no speed test, SIP registration or device
- * enumeration yet, so those two report "Not available yet" and the headset check follows the real
- * microphone permission instead of pretending.
+ * Internet, webphone and headset checks. The webphone check is the real SIP registration; the headset check follows
+ * the real microphone permission. There is no speed test yet, so the internet check reports "Not available yet".
  */
 function useChecks(mic: PermissionState) {
-  const [run, setRun] = useState(0);
-  const [states, setStates] = useState<CheckState[]>(['checking', 'checking', 'checking']);
   const sip = useSipPhone();
-  useEffect(() => {
-    if (!IS_DEMO) return;
-    const timers = [700, 1300, 1900].map((ms, i) => setTimeout(() => setStates((s) => s.map((x, j) => (j === i ? 'passed' : x))), ms));
-    return () => timers.forEach(clearTimeout);
-  }, [run]);
   const rerun = useCallback(() => {
-    setStates(['checking', 'checking', 'checking']);
-    setRun((r) => r + 1);
-    if (USE_BACKEND && useSipPhone.getState().status !== 'registered') void useSipPhone.getState().retry();
+    if (useSipPhone.getState().status !== 'registered') void useSipPhone.getState().retry();
   }, []);
 
-  // Against the backend the webphone check is the real registration, demo or not. It blocks going live
-  // until the extension registers, except where the webphone can't run at all (Expo Go).
-  const webphone: CheckState | null = USE_BACKEND
-    ? sip.status === 'registered'
-      ? 'passed'
-      : sip.status === 'idle' || sip.status === 'connecting'
-        ? 'checking'
-        : 'unavailable'
-    : null;
-  const webphoneOk = webphone === null || webphone === 'passed' || sip.status === 'unsupported';
-
-  if (IS_DEMO) {
-    const shown = webphone ? states.map((x, i) => (i === 1 ? webphone : x)) : states;
-    return { states: shown, rerun, allPassed: states.every((s) => s === 'passed') && webphoneOk };
-  }
+  // The webphone check is the real registration. It blocks going live until the extension registers, except
+  // where the webphone can't run at all (Expo Go).
+  const webphone: CheckState =
+    sip.status === 'registered' ? 'passed' : sip.status === 'idle' || sip.status === 'connecting' ? 'checking' : 'unavailable';
+  const webphoneOk = webphone === 'passed' || sip.status === 'unsupported';
   const headset: CheckState = mic === 'checking' ? 'checking' : mic === 'granted' ? 'passed' : 'unavailable';
-  const real: CheckState[] = ['unavailable', webphone ?? 'unavailable', headset];
+  const states: CheckState[] = ['unavailable', webphone, headset];
   // Checks that cannot run yet must not block going live; the permissions card gates that
-  return { states: real, rerun, allPassed: webphoneOk };
-}
-
-/** Demo-only: there is no real input metering, so the bars wobble at random around the chosen level. */
-function LevelMeter({ level, boost }: { level: number; boost: boolean }) {
-  const { c } = useTheme();
-  const [v, setV] = useState(0);
-  useEffect(() => {
-    const t = setInterval(() => {
-      const base = boost ? 0.55 + Math.random() * 0.45 : 0.1 + Math.random() * 0.35;
-      setV(base * level);
-    }, 120);
-    return () => clearInterval(t);
-  }, [level, boost]);
-  const n = 20;
-  const lit = Math.round(v * n);
-  return (
-    <View accessibilityLabel={`Input level ${Math.round(v * 100)} percent`} style={{ flexDirection: 'row', gap: 3, height: 10 }}>
-      {Array.from({ length: n }, (_, i) => (
-        <View
-          key={i}
-          style={{
-            flex: 1,
-            borderRadius: 2,
-            backgroundColor: i < lit ? (i >= n * 0.85 ? c.signalDown : i >= n * 0.65 ? c.signalWarn : c.signalOk) : c.mutedFill,
-            borderWidth: i < lit ? 0 : 1,
-            borderColor: c.divider,
-          }}
-        />
-      ))}
-    </View>
-  );
+  return { states, rerun, allPassed: webphoneOk };
 }
 
 function CheckCard({
@@ -153,42 +94,6 @@ function CheckCard({
       </View>
       {(ok || unavailable) && children}
     </Card>
-  );
-}
-
-function DevicePicker({ label, icon, value, onPress }: { label: string; icon: IconName; value: string; onPress: () => void }) {
-  const { c } = useTheme();
-  return (
-    <View style={{ gap: 6 }}>
-      <T v="label" color={c.ink2}>
-        {label}
-      </T>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`${label}: ${value}. Change`}
-        onPress={() => {
-          tap();
-          onPress();
-        }}
-        style={({ pressed }) => ({
-          minHeight: 48,
-          borderRadius: 8,
-          borderWidth: 1,
-          borderColor: c.line,
-          backgroundColor: pressed ? c.subtle : c.surface,
-          flexDirection: 'row',
-          alignItems: 'center',
-          gap: 10,
-          paddingHorizontal: 12,
-        })}
-      >
-        <Icon name={icon} size={18} color={c.ink2} />
-        <T v="body" numberOfLines={1} style={{ flex: 1 }}>
-          {value}
-        </T>
-        <Icon name="expand-more" size={20} color={c.ink2} />
-      </Pressable>
-    </View>
   );
 }
 
@@ -278,12 +183,12 @@ export function Preflight({ mode, onDone }: { mode: 'golive' | 'diagnostics'; on
   const s = useSettings();
   const mic = usePermissionsStore((p) => p.mic);
   const sip = useSipPhone();
-  const sipFailed = USE_BACKEND && (sip.status === 'failed' || sip.status === 'disconnected');
+  const sipFailed = sip.status === 'failed' || sip.status === 'disconnected';
   const { states, rerun, allPassed: checksPassed } = useChecks(mic);
   // Browsers ask for the mic on first use, so the web build only warns instead of blocking Go live
   const micReady = mic === 'granted' || mic === 'unsupported' || Platform.OS === 'web';
-  // Against the backend the campaign comes from the server after login; going live needs it
-  const campaignReady = !USE_BACKEND || !!agent?.campaignId;
+  // The campaign comes from the server after login; going live needs it
+  const campaignReady = !!agent?.campaignId;
   const campaignError = useCampaigns((x) => x.error);
   const [campaignRetrying, setCampaignRetrying] = useState(false);
   const allPassed = checksPassed && micReady && campaignReady;
@@ -298,18 +203,6 @@ export function Preflight({ mode, onDone }: { mode: 'golive' | 'diagnostics'; on
       setGoing(false);
     }
   };
-  const [picker, setPicker] = useState<'mic' | 'speaker' | null>(null);
-  const [testingMic, setTestingMic] = useState(false);
-  const micTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(
-    () => () => {
-      if (micTimer.current) clearTimeout(micTimer.current);
-    },
-    [],
-  );
-
-  const micLow = s.micLevel < 0.85;
   const golive = mode === 'golive';
 
   return (
@@ -332,9 +225,7 @@ export function Preflight({ mode, onDone }: { mode: 'golive' | 'diagnostics'; on
             </T>
             <T v="body" color={allPassed ? c.successFg : c.ink2} accessibilityLiveRegion="polite">
               {allPassed
-                ? IS_DEMO
-                  ? 'All systems ready — you’re good to go live!'
-                  : 'Microphone allowed — you can go live. Some checks aren’t available yet.'
+                ? 'Microphone allowed — you can go live. Some checks aren’t available yet.'
                 : checksPassed && !micReady
                   ? 'Allow microphone access to go live.'
                   : sipFailed
@@ -343,8 +234,8 @@ export function Preflight({ mode, onDone }: { mode: 'golive' | 'diagnostics'; on
                       ? (campaignError ?? 'Loading your campaign…')
                       : 'Running a few quick checks…'}
             </T>
-            {USE_BACKEND && !!agent?.campaignName && <T v="caption">Campaign · {agent.campaignName}</T>}
-            {USE_BACKEND && !campaignReady && !!campaignError && (
+            {!!agent?.campaignName && <T v="caption">Campaign · {agent.campaignName}</T>}
+            {!campaignReady && !!campaignError && (
               <Button
                 label="Try again"
                 icon="refresh"
@@ -367,7 +258,7 @@ export function Preflight({ mode, onDone }: { mode: 'golive' | 'diagnostics'; on
           title="Internet connection"
           tip={helpText.internetCheck}
           state={states[0]}
-          detail={IS_DEMO ? 'Strong signal · 10 Mbps · 50ms latency' : 'Speed and latency test isn’t wired up yet'}
+          detail="Speed and latency test isn’t wired up yet"
         />
         <CheckCard
           icon="dialer-sip"
@@ -375,18 +266,14 @@ export function Preflight({ mode, onDone }: { mode: 'golive' | 'diagnostics'; on
           tip={helpText.webphoneCheck}
           state={states[1]}
           detail={
-            USE_BACKEND
-              ? // The web's system check (layout/agent/SystemCheckModal.tsx)
-                sip.status === 'registered'
-                ? ['Registered', sip.extension ? `Extension ${sip.extension}` : null, agent?.campaignName ?? null].filter(Boolean).join(' · ')
-                : sip.status === 'connecting' || sip.status === 'idle'
-                  ? 'Connecting to webphone…'
-                  : sip.status === 'unsupported'
-                    ? (sip.detail ?? 'Registration failed — check SIP configuration')
-                    : 'Registration failed — check SIP configuration'
-              : IS_DEMO
-                ? `Registered · Extension ${agent?.extension ?? '—'}`
-                : 'Extension registration isn’t wired up yet'
+            // The web's system check (layout/agent/SystemCheckModal.tsx)
+            sip.status === 'registered'
+              ? ['Registered', sip.extension ? `Extension ${sip.extension}` : null, agent?.campaignName ?? null].filter(Boolean).join(' · ')
+              : sip.status === 'connecting' || sip.status === 'idle'
+                ? 'Connecting to webphone…'
+                : sip.status === 'unsupported'
+                  ? (sip.detail ?? 'Registration failed — check SIP configuration')
+                  : 'Registration failed — check SIP configuration'
           }
         >
           {sipFailed && <Button label="Try again" icon="refresh" variant="outline" size="sm" onPress={rerun} />}
@@ -397,24 +284,15 @@ export function Preflight({ mode, onDone }: { mode: 'golive' | 'diagnostics'; on
           tip={helpText.headsetCheck}
           state={states[2]}
           detail={
-            IS_DEMO
-              ? `Headset connected — mic input ${micLow ? 'low' : 'good'}`
-              : states[2] === 'passed'
-                ? 'Microphone allowed · using the phone’s current audio device'
-                : 'Allow the microphone above to use it on calls'
+            states[2] === 'passed'
+              ? 'Microphone allowed · using the phone’s current audio device'
+              : 'Allow the microphone above to use it on calls'
           }
         >
           <View style={{ gap: 14 }}>
-            {IS_DEMO ? (
-              <>
-                <DevicePicker label="Microphone" icon="mic" value={s.micDevice} onPress={() => setPicker('mic')} />
-                <DevicePicker label="Speaker" icon="volume-up" value={s.speakerDevice} onPress={() => setPicker('speaker')} />
-              </>
-            ) : (
-              <T v="caption" color={c.ink3}>
-                Choosing a microphone or speaker isn’t available yet. Calls use the device your phone has selected.
-              </T>
-            )}
+            <T v="caption" color={c.ink3}>
+              Choosing a microphone or speaker isn’t available yet. Calls use the device your phone has selected.
+            </T>
 
             <View style={{ gap: 8 }}>
               <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
@@ -430,7 +308,6 @@ export function Preflight({ mode, onDone }: { mode: 'golive' | 'diagnostics'; on
                 <Slider label="Mic input level" value={s.micLevel} onChange={(v) => s.set({ micLevel: v })} />
                 <Icon name="mic" size={18} color={c.ink2} />
               </View>
-              {IS_DEMO && <LevelMeter level={s.micLevel} boost={testingMic} />}
             </View>
 
             <View style={{ gap: 8 }}>
@@ -450,23 +327,6 @@ export function Preflight({ mode, onDone }: { mode: 'golive' | 'diagnostics'; on
             </View>
 
             <View style={{ flexDirection: 'row', gap: 10 }}>
-              {IS_DEMO && (
-                <Button
-                  label={testingMic ? 'Listening…' : 'Test mic'}
-                  icon="mic"
-                  variant="outline"
-                  size="sm"
-                  style={{ flex: 1 }}
-                  disabled={testingMic}
-                  onPress={() => {
-                    setTestingMic(true);
-                    micTimer.current = setTimeout(() => {
-                      setTestingMic(false);
-                      notify(micLow ? 'Mic works, but input is low. Raise the level.' : 'Mic sounds good', micLow ? 'warning' : 'success');
-                    }, 2500);
-                  }}
-                />
-              )}
               <Button
                 label="Test Headset"
                 icon="headphones"
@@ -511,39 +371,6 @@ export function Preflight({ mode, onDone }: { mode: 'golive' | 'diagnostics'; on
         )}
       </View>
 
-      <Sheet open={IS_DEMO && !!picker} onClose={() => setPicker(null)} title={picker === 'mic' ? 'Microphone' : 'Speaker'} scroll={false}>
-        {(picker === 'mic' ? mics : speakers).map((d) => {
-          const on = (picker === 'mic' ? s.micDevice : s.speakerDevice) === d;
-          return (
-            <Pressable
-              key={d}
-              accessibilityRole="radio"
-              accessibilityState={{ checked: on }}
-              onPress={() => {
-                tap();
-                s.set(picker === 'mic' ? { micDevice: d } : { speakerDevice: d });
-                setPicker(null);
-              }}
-              style={{
-                minHeight: 56,
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: 12,
-                paddingHorizontal: 14,
-                borderRadius: 12,
-                borderWidth: 1,
-                borderColor: on ? c.purple : c.line,
-                backgroundColor: on ? c.selected : c.surface,
-              }}
-            >
-              <T v="bodyStrong" style={{ flex: 1 }}>
-                {d}
-              </T>
-              {on && <Icon name="check" color={c.purple} />}
-            </Pressable>
-          );
-        })}
-      </Sheet>
     </View>
   );
 }

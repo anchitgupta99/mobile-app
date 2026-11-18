@@ -1,7 +1,6 @@
 import { router } from 'expo-router';
 import { Platform, Pressable, View } from 'react-native';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
-import { useNetwork } from '@/api/network';
 import { formatRelative } from '@/domain/format';
 import { useNow } from '@/hooks/useNow';
 import { isMissing, usePermissions } from '@/hooks/usePermissions';
@@ -61,7 +60,6 @@ export function StatusBanners() {
   const syncError = useData((s) => s.syncError);
   const lastSyncAt = useData((s) => s.lastSyncAt);
   const refreshing = useData((s) => s.refreshing);
-  const offline = useNetwork((s) => s.quality === 'offline');
   const { notifications, mic, request, openSettings } = usePermissions();
   const failed = useOutbox((s) => s.items.filter((i) => i.error).length);
   const now = useNow(60000);
@@ -100,10 +98,9 @@ export function StatusBanners() {
           onAction={() => router.push('/sync')}
         />
       )}
-      {/* Offline is already shown by the top bar chip */}
-      {!offline && syncError && !refreshing ? (
+      {syncError && !refreshing ? (
         <Banner tone="error" icon="sync-problem" text={`Couldn't refresh. ${updated}`} action="Retry" onAction={retry} />
-      ) : !offline && stale && !refreshing ? (
+      ) : stale && !refreshing ? (
         <Banner tone="warning" icon="update" text={`${updated} Data may be out of date.`} action="Refresh" onAction={retry} />
       ) : null}
     </View>

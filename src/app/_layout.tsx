@@ -14,16 +14,12 @@ import { confirmLogout } from '@/components/AppMenu';
 import { Logo } from '@/components/Logo';
 import { Avatar, Button, T } from '@/components/ui';
 import { duration } from '@/theme/motion';
-import { api } from '@/api/client';
-import { sampleNetwork, useNetwork } from '@/api/network';
-import { realtime } from '@/api/realtime';
 import { preloadSounds } from '@/feedback';
 import { useCallFeedback } from '@/feedback/useCallFeedback';
 import { useAgentSocket } from '@/hooks/useAgentSocket';
 import { useWebphoneWatch } from '@/hooks/useWebphoneWatch';
 import { useSyncFailureToast } from '@/hooks/useSyncFailureToast';
 import { useData } from '@/store/data';
-import { useOutbox } from '@/store/outbox';
 import { syncCampaign, useSession } from '@/store/session';
 import { useSettings } from '@/store/settings';
 import { useCall } from '@/telephony/callStore';
@@ -51,31 +47,18 @@ function lockIfIdle() {
 
 function useAppLifecycle() {
   const token = useSession((s) => s.token);
-  const quality = useNetwork((s) => s.quality);
   useAgentSocket();
   useSipRegistration();
   useWebphoneWatch();
 
+  // After login and on every app start: the agent's data from the server
   useEffect(() => {
-    if (quality !== 'offline' && token) {
-      void useOutbox.getState().flush();
-      void useData.getState().sync();
-    }
-  }, [quality, token]);
+    if (token) void useData.getState().sync();
+  }, [token]);
 
   // After login and on every app start, like the web on page load: the agent's campaigns and their active one
   useEffect(() => {
     if (token) void syncCampaign();
-  }, [token]);
-
-  useEffect(() => {
-    if (!token) return;
-    const beat = () => {
-      if (useSession.getState().status === 'available') void api.agents.heartbeat(sampleNetwork()).catch(() => undefined);
-    };
-    beat();
-    const t = setInterval(beat, 30000);
-    return () => clearInterval(t);
   }, [token]);
 
   // Cold start is an "active" transition too: the idle check must not trust what was persisted
@@ -95,21 +78,6 @@ function useAppLifecycle() {
     return () => sub.remove();
   }, []);
 
-  useEffect(
-    () =>
-      realtime.on('device.revoked', ({ reason }) => {
-        useSession.getState().logout(reason);
-      }),
-    [],
-  );
-
-  useEffect(
-    () =>
-      realtime.on('agent.status_changed', ({ status, breakCode, source }) => {
-        if (source === 'web') useSession.getState().setStatus(status, { remote: true, breakCode });
-      }),
-    [],
-  );
 }
 
 function useGate(ready: boolean) {

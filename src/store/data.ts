@@ -1,10 +1,8 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { ApiError, api } from '@/api/client';
-import { USE_BACKEND } from '@/api/http';
 import type { CallRecord, Contact, DispositionConfig, DispositionPayload, ServerConfig, Task, TimelineEvent } from '@/domain/types';
 import { uid } from '@/domain/format';
-import { dispositionConfig as fallbackDispositions, serverConfig as fallbackServer } from '@/mocks/seed';
 import { findCampaign } from './campaigns';
 import { pendingIds, useOutbox } from './outbox';
 import { storage } from './storage';
@@ -134,10 +132,9 @@ const empty = {
   calls: [] as CallRecord[],
   tasks: [] as Task[],
   timeline: [] as TimelineEvent[],
-  // Against the backend nothing sample is shown before the first sync: the tenant's break types and the
-  // campaign's dispositions come from the server, and until they load the lists stay empty
-  dispositions: USE_BACKEND ? { ...fallbackDispositions, dispositions: [] } : fallbackDispositions,
-  server: USE_BACKEND ? { ...fallbackServer, breakTypes: [] } : fallbackServer,
+  // The tenant's break types and the campaign's dispositions come from the server; empty until they load
+  dispositions: { campaignId: '', mandatory: true, acwSeconds: 30, dispositions: [] } as DispositionConfig,
+  server: { breakTypes: [] } as ServerConfig,
   lastSyncAt: null as string | null,
 };
 
@@ -159,8 +156,8 @@ export const useData = create<DataState>()(
           const since = get().lastSyncAt ?? undefined;
           const [contacts, calls, tasks, dispositions, server] = await Promise.all([
             api.contacts.list(since),
-            api.calls.list(since),
-            api.tasks.list(since),
+            api.calls.list(),
+            api.tasks.list(),
             api.dispositions.config(get().dispositions.campaignId, findCampaign(get().dispositions.campaignId)?.wrapUpSeconds),
             api.config.get(),
           ]);
@@ -169,10 +166,10 @@ export const useData = create<DataState>()(
           const pending = pendingIds(useOutbox.getState().items);
           set((s) => ({
             contacts: mergeById(s.contacts, contacts.items, pending),
-            calls: (USE_BACKEND ? withServerCalls(s.calls, calls.items, pending) : mergeById(s.calls, calls.items, pending)).sort(
+            calls: withServerCalls(s.calls, calls.items, pending).sort(
               (a, b) => b.startedAt.localeCompare(a.startedAt),
             ),
-            tasks: USE_BACKEND ? withServerTasks(s.tasks, tasks.items, pending) : mergeById(s.tasks, tasks.items, pending),
+            tasks: withServerTasks(s.tasks, tasks.items, pending),
             timeline: s.timeline.length ? s.timeline : api.timeline.seed(),
             dispositions,
             server,
@@ -212,15 +209,13 @@ export const useData = create<DataState>()(
               ]
             : s.timeline,
         }));
-        useOutbox.getState().enqueue({ kind: 'call', label: 'Call log', payload: call });
       },
       saveDisposition: async (payload, extra) => {
         const label = extra?.label ?? payload.code;
         const call = get().calls.find((c) => c.id === payload.callId);
-        // Backend: sent straight away, as the web's Submit, and the call only shows the disposition once the
-        // server has accepted it; a rejection reaches the wrap-up screen with the server's reason
-        const direct = USE_BACKEND && !!payload.server;
-        if (direct) await api.calls.disposition(uid('dp'), payload);
+        // Sent straight away, as the web's Submit, and the call only shows the disposition once the server has
+        // accepted it; a rejection reaches the wrap-up screen with the server's reason
+        await api.calls.disposition(payload);
         set((s) => {
           return {
             calls: s.calls.map((c) =>
@@ -236,15 +231,6 @@ export const useData = create<DataState>()(
             ),
           };
         });
-        if (direct) return;
-        useOutbox.getState().enqueue({ kind: 'disposition', label: `Disposition · ${label}`, payload });
-        // Other devices read the contact's last outcome from the contact row, so send that change too
-        if (call?.contactId)
-          useOutbox.getState().enqueue({
-            kind: 'contact',
-            label: 'Contact · last outcome',
-            payload: { id: call.contactId, patch: { lastDisposition: label, lastContactAt: call.startedAt } },
-          });
       },
       upsertTask: (task) => {
         const row = { ...task, updatedAt: stamp() };
@@ -315,17 +301,22 @@ export const useData = create<DataState>()(
       storage,
       partialize: ({ refreshing, syncError, sync, ...rest }) => rest,
       // v1: older builds saved the sample break types and dispositions before the server's had loaded;
-      // against the backend those are dropped, so a sample break id can never be sent to the server
-      version: 1,
+      // against the backend those are dropped, so a sample break id can never be sent to the server.
+      // v2: missed-call reminders made on the phone are dropped; as the web, a missed call only gets a toast.
+      version: 2,
       migrate: (persisted, version) => {
-        const s = persisted as Partial<DataState> | undefined;
-        if (!s || version >= 1 || !USE_BACKEND) return s as DataState;
-        const breakTypes = (s.server?.breakTypes ?? []).filter((b) => SERVER_ID.test(b.code));
-        return {
-          ...s,
-          server: { ...(s.server ?? empty.server), breakTypes },
-          dispositions: s.dispositions && SERVER_ID.test(s.dispositions.campaignId) ? s.dispositions : empty.dispositions,
-        } as DataState;
+        let s = persisted as Partial<DataState> | undefined;
+        if (!s) return s as unknown as DataState;
+        if (version < 1) {
+          const breakTypes = (s.server?.breakTypes ?? []).filter((b) => SERVER_ID.test(b.code));
+          s = {
+            ...s,
+            server: { ...(s.server ?? empty.server), breakTypes },
+            dispositions: s.dispositions && SERVER_ID.test(s.dispositions.campaignId) ? s.dispositions : empty.dispositions,
+          };
+        }
+        if (version < 2) s = { ...s, tasks: (s.tasks ?? []).filter((t) => t.kind !== 'missed') };
+        return s as DataState;
       },
     },
   ),

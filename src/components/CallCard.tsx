@@ -1,6 +1,8 @@
 import * as Clipboard from 'expo-clipboard';
 import { router } from 'expo-router';
-import { Pressable, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { ActivityIndicator, Pressable, View } from 'react-native';
+import { api } from '@/api/client';
 import { formatDuration, formatWhen } from '@/domain/format';
 import { findCampaign } from '@/store/campaigns';
 import { findPath, pathLabel } from '@/domain/dispositions';
@@ -26,9 +28,9 @@ export function campaignName(id: string, fromRecord?: string) {
   return findCampaign(id)?.name ?? fromRecord ?? id;
 }
 
-/** Who the call was with: the app's contact, else the name in the server's call history */
+/** Who the call was with: the app's contact, else the name in the server's call history (empty without one) */
 export function callName(call: CallRecord, contact: Contact | undefined) {
-  return contact?.name ?? call.customerName ?? 'Unknown';
+  return contact?.name || call.customerName || '';
 }
 
 function dirIcon(c: CallRecord): { icon: IconName; missed: boolean; label: string } {
@@ -81,7 +83,7 @@ export function CallCard({
       {/* Only the header navigates, so the action buttons below aren't nested inside another button */}
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={`${callName(call, contact)}, ${d.label}, ${formatWhen(call.startedAt)}, ${disposition}. Open call details`}
+        accessibilityLabel={`${callName(call, contact) || 'Unknown number'}, ${d.label}, ${formatWhen(call.startedAt)}, ${disposition}. Open call details`}
         onPress={() => {
           tap();
           router.push(`/call-detail/${call.id}`);
@@ -101,12 +103,15 @@ export function CallCard({
           <Icon name={d.icon} size={18} color={d.missed ? c.errorFg : c.successFg} />
         </View>
         <View style={{ flex: 1 }}>
+          {/* The name if the server has one, then the number; without a name, just the number (masked per campaign) */}
           <T v="bodyStrong" numberOfLines={1}>
-            {callName(call, contact)}
-            <T v="body" color={c.ink2}>
-              {' '}
-              · {call.displayNumber ?? phone(call.number)}
-            </T>
+            {callName(call, contact) || (call.displayNumber ?? phone(call.number))}
+            {!!callName(call, contact) && (
+              <T v="body" color={c.ink2}>
+                {' '}
+                · {call.displayNumber ?? phone(call.number)}
+              </T>
+            )}
           </T>
           <T v="caption" nums>
             {formatWhen(call.startedAt)}
@@ -175,28 +180,53 @@ export function CallCard({
   );
 }
 
-export function leadStatus(contact: Contact | undefined, hasOpenTask: boolean) {
-  if (!contact) return 'NEW';
-  if (contact.dnc) return 'DNC';
-  return hasOpenTask ? 'CALLBACK' : 'IDLE';
+/**
+ * The lead's fields as the web's "View Lead Profile" lists them (LeadDetailsModal): every field the server sends,
+ * masked as the campaign says, with the call's UUID put in after the email field. Readable names: "email_id"
+ * becomes "Email Id", "call_uuid" "Call UUID".
+ */
+function leadEntries(data: Record<string, unknown> | null, callUuid: string | undefined): [string, string][] {
+  if (!data || Object.keys(data).length === 0) return [];
+  const entries = Object.entries(data);
+  const hasUuid = entries.some(([k]) => k.toLowerCase() === 'call_uuid' || k.toLowerCase() === 'calluuid');
+  if (callUuid && !hasUuid) {
+    const emailAt = entries.findIndex(([k]) => k.toLowerCase().replace(/[^a-z]/g, '').includes('email'));
+    if (emailAt !== -1) entries.splice(emailAt + 1, 0, ['call_uuid', callUuid]);
+    else entries.push(['call_uuid', callUuid]);
+  }
+  return entries.map(([key, val]) => {
+    const isUuid = key.toLowerCase() === 'call_uuid' || key.toLowerCase() === 'calluuid';
+    const label = isUuid ? 'Call UUID' : key.replace(/_/g, ' ').replace(/\b\w/g, (ch) => ch.toUpperCase());
+    const value = val === null || val === undefined ? '—' : typeof val === 'object' ? JSON.stringify(val) : String(val);
+    return [label, value];
+  });
 }
 
 /** Read-only lead details for a call; every value can be copied. */
 export function LeadSheet({ call, onClose }: { call: CallRecord | null; onClose: () => void }) {
   const { c } = useTheme();
-  const contact = useData((s) => s.contacts.find((x) => x.id === call?.contactId));
-  const openTask = useData((s) => s.tasks.some((t) => !t.done && !!call?.contactId && t.contactId === call.contactId));
-  const phone = usePhoneDisplay();
 
-  const rows: [string, string][] = call
-    ? [
-        ['Id', contact?.id ?? call.leadId ?? '—'],
-        ['Name', callName(call, contact)],
-        ['Status', leadStatus(contact, openTask)],
-        ['Phone number', call.displayNumber ?? phone(call.number)],
-        ['Call UUID', call.uuid ?? call.id],
-      ]
-    : [];
+  // The lead from the server, loaded when the sheet opens (null while loading)
+  const [loaded, setLoaded] = useState<{ callId: string; rows: [string, string][] } | null>(null);
+  const callId = call?.id;
+  const leadId = call?.leadId;
+  const callUuid = call?.uuid;
+  useEffect(() => {
+    // A call without a lead has nothing to load: "No details found" straight away
+    if (!callId || !leadId) return;
+    let gone = false;
+    api.leads
+      .details(leadId)
+      .then((data) => !gone && setLoaded({ callId, rows: leadEntries(data, callUuid) }))
+      // As the web: a lead that can't be loaded shows "No details found"
+      .catch(() => !gone && setLoaded({ callId, rows: [] }));
+    return () => {
+      gone = true;
+    };
+  }, [callId, leadId, callUuid]);
+  const loading = !!call?.leadId && loaded?.callId !== call.id;
+
+  const rows: [string, string][] = call?.leadId && loaded?.callId === call.id ? loaded.rows : [];
 
   const copy = async (text: string, what: string) => {
     await Clipboard.setStringAsync(text);
@@ -210,15 +240,29 @@ export function LeadSheet({ call, onClose }: { call: CallRecord | null; onClose:
       onClose={onClose}
       title="Lead details"
       footer={
-        <Button
-          label="Copy data"
-          icon="content-copy"
-          full
-          variant="secondary"
-          onPress={() => void copy(rows.map(([k, v]) => `${k}: ${v}`).join('\n'), 'Lead data')}
-        />
+        rows.length > 0 ? (
+          <Button
+            label="Copy data"
+            icon="content-copy"
+            full
+            variant="secondary"
+            onPress={() => void copy(rows.map(([k, v]) => `${k}: ${v}`).join('\n'), 'Lead data')}
+          />
+        ) : undefined
       }
     >
+      {loading ? (
+        <View style={{ alignItems: 'center', paddingVertical: 32 }}>
+          <ActivityIndicator color={c.purple} />
+        </View>
+      ) : rows.length === 0 ? (
+        <View style={{ alignItems: 'center', gap: 8, paddingVertical: 32 }}>
+          <Icon name="description" size={32} color={c.ink3} />
+          <T v="body" color={c.ink2}>
+            No details found
+          </T>
+        </View>
+      ) : (
       <View style={{ borderWidth: 1, borderColor: c.line, borderRadius: 12 }}>
         {rows.map(([k, v], i) => (
           <View key={k}>
@@ -235,6 +279,7 @@ export function LeadSheet({ call, onClose }: { call: CallRecord | null; onClose:
           </View>
         ))}
       </View>
+      )}
     </Sheet>
   );
 }

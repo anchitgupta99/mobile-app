@@ -3,11 +3,9 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Pressable, View } from 'react-native';
 import Animated, { FadeIn, FadeOut, LinearTransition } from 'react-native-reanimated';
 import { create } from 'zustand';
-import { USE_BACKEND } from '@/api/http';
 import { useCampaigns } from '@/store/campaigns';
 import { useOutbox } from '@/store/outbox';
 import { useSession } from '@/store/session';
-import { useSettings } from '@/store/settings';
 import { useCall } from '@/telephony/callStore';
 import { useTheme } from '@/theme';
 import { duration } from '@/theme/motion';
@@ -200,14 +198,11 @@ export function AppMenu() {
   const open = useAppMenu((s) => s.open);
   const hide = useAppMenu((s) => s.hide);
   const agent = useSession((s) => s.agent);
-  const localAutoCall = useSettings((s) => s.autoCall);
-  const set = useSettings((s) => s.set);
-  // Against the backend auto-call is the agent's setting on the server, and only shown when the admin lets
-  // them change it (as the web's top bar)
-  const autoCall = USE_BACKEND ? agent?.autoCallEnabled !== false : localAutoCall;
-  const showAutoCall = !USE_BACKEND || agent?.canManageAutoCall !== false;
+  // Auto-call is the agent's setting on the server, and only shown when the admin lets them change it (as the
+  // web's top bar)
+  const autoCall = agent?.autoCallEnabled !== false;
+  const showAutoCall = agent?.canManageAutoCall !== false;
   const changeAutoCall = (v: boolean) => {
-    if (!USE_BACKEND) return set({ autoCall: v });
     useSession
       .getState()
       .setAutoCall(v)
@@ -261,7 +256,7 @@ export function AppMenu() {
             <MenuLine
               icon="autorenew"
               title="Auto-call"
-              body={USE_BACKEND ? 'In auto campaigns, the dialer sends you the next lead after wrap-up' : 'In auto campaigns, dial the next lead after wrap-up'}
+              body="In auto campaigns, the dialer sends you the next lead after wrap-up"
               right={<Toggle label="Auto-call" value={autoCall} onChange={changeAutoCall} />}
             />
           </>

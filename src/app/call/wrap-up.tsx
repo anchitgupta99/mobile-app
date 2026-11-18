@@ -5,8 +5,6 @@ import Animated, { FadeIn, FadeOut, LinearTransition } from 'react-native-reanim
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { api } from '@/api/client';
 import { webText } from '@/api/errors';
-import { USE_BACKEND } from '@/api/http';
-import { useNetwork } from '@/api/network';
 import { DispositionPicker } from '@/components/DispositionPicker';
 import { feedback } from '@/feedback';
 import { duration } from '@/theme/motion';
@@ -14,17 +12,15 @@ import { InfoTip } from '@/components/InfoTip';
 import { helpText } from '@/domain/helpText';
 import { notify } from '@/components/feedback';
 import { useStatusSheet } from '@/components/StatusSheet';
-import { ModeBadge } from '@/components/ModeBadge';
 import { usePhoneDisplay } from '@/components/PhoneText';
 import { Button, Field, Icon, IconButton, Pill, T, tap, Toggle, type IconName } from '@/components/ui';
-import { formatDuration, formatWhen, uid } from '@/domain/format';
+import { formatDuration, formatWhen } from '@/domain/format';
 import { findPath, isComplete, isRetryDisposition, pathLabel, type DispositionPath } from '@/domain/dispositions';
 import type { DispositionConfig, DispositionField } from '@/domain/types';
 import { useNow } from '@/hooks/useNow';
 import { findCampaign } from '@/store/campaigns';
 import { useData } from '@/store/data';
 import { useSession } from '@/store/session';
-import { scheduleAutoCall } from '@/telephony/autoCall';
 import { sendableName, useCall } from '@/telephony/callStore';
 import { font, useTheme } from '@/theme';
 import { keyboardBehavior } from '@/components/keyboard';
@@ -152,7 +148,6 @@ export default function WrapUp() {
   const insets = useSafeAreaInsets();
   const { id } = useLocalSearchParams<{ id: string }>();
   const call = useData((s) => s.calls.find((x) => x.id === id));
-  const contact = useData((s) => s.contacts.find((x) => x.id === call?.contactId));
   const storeConfig = useData((s) => s.dispositions);
   const tasks = useData((s) => s.tasks);
   const saveDisposition = useData((s) => s.saveDisposition);
@@ -163,7 +158,6 @@ export default function WrapUp() {
   const taskId = useCall((s) => (id ? s.taskLinks[id] : undefined));
   const finishWrapUp = useCall((s) => s.finishWrapUp);
   const setStatus = useSession((s) => s.setStatus);
-  const quality = useNetwork((s) => s.quality);
   const phone = usePhoneDisplay();
   const now = useNow();
   const [opened] = useState(() => Date.now());
@@ -176,7 +170,7 @@ export default function WrapUp() {
 
   // Against the backend the options are the call's own campaign's, fetched for this wrap-up (as the web's
   // disposition panel does): an inbound or auto-dial-group call can be in another campaign than the agent's
-  const fromServer = USE_BACKEND && postCall;
+  const fromServer = postCall;
   const campaignId = call?.campaignId;
   const [remote, setRemote] = useState<DispositionConfig | null>(null);
   const [remoteError, setRemoteError] = useState<string | null>(null);
@@ -192,9 +186,7 @@ export default function WrapUp() {
       gone = true;
     };
   }, [fromServer, campaignId, attempt]);
-  const config: DispositionConfig = fromServer
-    ? (remote ?? { ...storeConfig, dispositions: [], acwSeconds: findCampaign(campaignId)?.wrapUpSeconds ?? 30 })
-    : storeConfig;
+  const config: DispositionConfig = remote ?? { ...storeConfig, dispositions: [], acwSeconds: findCampaign(campaignId)?.wrapUpSeconds ?? 30 };
   const loadingDispositions = fromServer && !remote;
   // Wrap-up replaced the active-call screen, so the route under it is wherever the call started.
   // Only unwind to the callbacks list when that was the tab group; from a contact or task page a
@@ -280,21 +272,21 @@ export default function WrapUp() {
   const acwLeft = config.acwSeconds - Math.floor((now - opened) / 1000);
   const missing = pathFields.filter((f) => f.required && !fields[f.key]?.trim());
   // A campaign without a disposition template has nothing to pick; the call still gets closed
-  const noOptions = fromServer && !!remote && remote.dispositions.length === 0;
+  const noOptions = !!remote && remote.dispositions.length === 0;
   // Backend: the template's switches (all on when the list didn't say, as the web) and the deepest outcome
   // picked so far, which decides a required callback or a do-not-call outcome as on the web
-  const prefs = fromServer ? (config.prefs ?? { callbackEnabled: true, dncEnabled: true, notesEnabled: true, notesRequired: false }) : null;
+  const prefs = config.prefs ?? { callbackEnabled: true, dncEnabled: true, notesEnabled: true, notesRequired: false };
   const deepest = path[path.length - 1] ?? null;
-  const notesShown = prefs ? prefs.notesEnabled : true;
-  const notesNeeded = prefs ? prefs.notesRequired : !!config.notesRequired || !!chosen?.requiresNotes;
+  const notesShown = prefs.notesEnabled;
+  const notesNeeded = prefs.notesRequired;
   const notesMissing = notesNeeded && !notes.trim();
   // A control the admin turned off carries nothing into the submit, as on the web
   const sentNotes = notesShown ? notes.trim() : '';
-  const autoDnc = !!prefs && !!deepest?.doNotCall;
-  const showDnc = !!prefs && (prefs.dncEnabled || autoDnc);
+  const autoDnc = !!deepest?.doNotCall;
+  const showDnc = prefs.dncEnabled || autoDnc;
   const dndOn = showDnc && (dnd || autoDnc);
-  const requiresCallback = !!prefs && !!deepest?.requiresCallback;
-  const showCallback = !!prefs && (prefs.callbackEnabled || requiresCallback);
+  const requiresCallback = !!deepest?.requiresCallback;
+  const showCallback = prefs.callbackEnabled || requiresCallback;
   const callbackActive = showCallback && (scheduleCallback || requiresCallback);
   const callbackIncomplete = callbackActive && !callbackAt;
   const callbackCampaign = findCampaign(call.campaignId)?.name ?? call.campaignName ?? '';
@@ -345,8 +337,8 @@ export default function WrapUp() {
     }
     setSubmitError(null);
     setSaving(next === 'break' ? 'break' : 'available');
-    // Backend: what goes in on the timer's auto-submit is the outcome picked so far (see serverBody)
-    const sent = fromServer && timeout ? deepest : chosen;
+    // What goes in on the timer's auto-submit is the outcome picked so far (see serverBody)
+    const sent = timeout ? deepest : chosen;
     try {
       await saveDisposition(
         {
@@ -355,7 +347,7 @@ export default function WrapUp() {
           notes: sentNotes,
           fields,
           submittedAt: new Date().toISOString(),
-          ...(fromServer && { server: serverBody(timeout) }),
+          server: serverBody(timeout),
         },
         { label: sent ? pathLabel(path) : timeout ? 'Auto-disposed' : 'No disposition' },
       );
@@ -375,15 +367,14 @@ export default function WrapUp() {
     // which adds it itself). The web sends it before the disposition, after checking the lead's required fields
     // itself; here the server does that check with the disposition, so the DND goes in only once that is saved.
     // If it fails the disposition stays saved, as on the web.
-    if (fromServer && dndOn && !autoDnc && call.campaignId) {
+    if (dndOn && !autoDnc && call.campaignId) {
       void api.dnc
         .add({ phoneNumber: call.number, leadName: sendableName(call.customerName), campaignId: call.campaignId })
         .catch(() => undefined);
     }
-    const cbField = pathFields.find((f) => f.kind === 'datetime' && f.createsTask);
     // As the web, once the disposition is saved (also on an auto-submit when a time was set): the callback, for
     // this agent or for the campaign. Its failure reads as the web's ("Submission Failed"); the disposition stays saved.
-    if (fromServer && callbackActive && callbackAt && call.campaignId) {
+    if (callbackActive && callbackAt && call.campaignId) {
       api.callbacks
         .create({
           leadId: call.leadId ?? null,
@@ -400,68 +391,25 @@ export default function WrapUp() {
           notify(webText(e, ['message'], 'Failed to submit. Please try again.'), 'error', undefined, { title: 'Submission Failed' }),
         );
     }
-    if (!fromServer && cbField && fields[cbField.key]) {
-      upsertTask({
-        id: uid('tk'),
-        kind: 'callback',
-        title: notes.trim().split('\n')[0]?.slice(0, 60) || 'Callback',
-        contactId: call.contactId,
-        number: call.number,
-        dueAt: fields[cbField.key],
-        slaDueAt: null,
-        notes: notes.trim(),
-        done: false,
-        createdFromCallId: call.id,
-        updatedAt: new Date().toISOString(),
-      });
-    }
     // The callback that was being worked is done unless the customer still has to be reached
     if (taskId && chosen && !isRetryDisposition(chosen.code)) {
       const t = tasks.find((x) => x.id === taskId);
       if (t && !t.done) upsertTask({ ...t, done: true });
     }
-    if (chosen?.code === 'dnc' && call.contactId) useData.getState().updateContact(call.contactId, { dnc: true });
 
     feedback('disposition.saved');
     if (postCall) finishWrapUp();
-    // Against the backend the disposition itself makes the agent READY; a break needs its type, picked next
-    if (next === 'available' || (next === 'break' && !fromServer)) setStatus(next);
+    // The disposition itself makes the agent READY on the server; a break needs its type, picked next
+    if (next === 'available') setStatus(next);
     if (next === 'break') setTimeout(() => useStatusSheet.getState().show(true), 350);
     close();
-    if (fromServer) {
-      // The web's success toasts
-      notify(
-        timeout ? 'Wrap-up timer expired — disposition saved automatically.' : 'Your disposition has been saved successfully.',
-        'success',
-        undefined,
-        { silent: true, title: timeout ? 'Disposition Auto-Submitted' : 'Disposition Submitted' },
-      );
-      return;
-    }
-    if (postCall && next === 'available' && scheduleAutoCall()) return;
-
-    const offline = quality === 'offline';
-    const following = postCall
-      ? tasks.filter((t) => !t.done && t.id !== taskId && t.contactId).sort((a, b) => a.dueAt.localeCompare(b.dueAt))[0]
-      : undefined;
-    if (following && taskId) {
-      const who = useData.getState().contacts.find((x) => x.id === following.contactId)?.name ?? 'next contact';
-      setTimeout(
-        () =>
-          notify(
-            `Saved${offline ? ' on this phone' : ''}. Next: ${who}`,
-            'success',
-            {
-              label: 'Open',
-              onPress: () => router.push(`/task/${following.id}`),
-            },
-            { silent: true },
-          ),
-        250,
-      );
-    } else {
-      notify(offline ? 'Saved on this phone. Will sync when online.' : 'Disposition saved', 'success', undefined, { silent: true });
-    }
+    // The web's success toasts
+    notify(
+      timeout ? 'Wrap-up timer expired — disposition saved automatically.' : 'Your disposition has been saved successfully.',
+      'success',
+      undefined,
+      { silent: true, title: timeout ? 'Disposition Auto-Submitted' : 'Disposition Submitted' },
+    );
   };
 
   const renderField = (f: DispositionField) => {
@@ -513,7 +461,7 @@ export default function WrapUp() {
     <KeyboardAvoidingView behavior={keyboardBehavior} style={{ flex: 1, backgroundColor: c.page }}>
       {/* As the web: when the campaign's wrap-up time runs out, the disposition goes in as it stands, even when
           the list of dispositions didn't load (then with none, which the server saves as auto-disposed) */}
-      {fromServer && <WrapUpTimeout secondsLeft={acwLeft} onTimeout={() => void submit('available', true)} />}
+      <WrapUpTimeout secondsLeft={acwLeft} onTimeout={() => void submit('available', true)} />
       <View style={{ backgroundColor: c.topbar, paddingTop: insets.top + 8, paddingBottom: 14, paddingHorizontal: 16, gap: 10 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
           <T v="h2" color={c.onTopbar} style={{ flex: 1 }} accessibilityRole="header">
@@ -544,7 +492,7 @@ export default function WrapUp() {
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
           <View style={{ flex: 1 }}>
             <T v="bodyStrong" color={c.onTopbar} numberOfLines={1}>
-              {contact?.name || call.customerName || (call.displayNumber ?? phone(call.number))}
+              {call.customerName || (call.displayNumber ?? phone(call.number))}
             </T>
             <T v="caption" color={c.onTopbar} style={{ opacity: 0.8 }} nums>
               {call.direction === 'inbound' ? 'Inbound' : 'Outbound'} ·{' '}
@@ -552,7 +500,6 @@ export default function WrapUp() {
               {formatWhen(call.startedAt)}
             </T>
           </View>
-          <ModeBadge mode={call.mode} />
         </View>
       </View>
 
@@ -628,18 +575,12 @@ export default function WrapUp() {
         {notesShown && (
           <Animated.View layout={LinearTransition.duration(duration.base)}>
             <Field
-              label={`${fromServer ? 'Additional Note' : 'Notes'}${notesNeeded ? ' *' : ''}`}
+              label={`Additional Note${notesNeeded ? ' *' : ''}`}
               multiline
               value={notes}
               onChangeText={setNotes}
-              placeholder={fromServer ? 'Add a note...' : "What happened, what's next"}
-              error={
-                touched && notesMissing
-                  ? fromServer
-                    ? 'Additional notes are required'
-                    : 'A note is required for this disposition'
-                  : null
-              }
+              placeholder="Add a note..."
+              error={touched && notesMissing ? 'Additional notes are required' : null}
             />
           </Animated.View>
         )}
@@ -681,24 +622,6 @@ export default function WrapUp() {
           </Animated.View>
         )}
 
-        {quality === 'offline' && (
-          <View
-            style={{
-              flexDirection: 'row',
-              gap: 10,
-              backgroundColor: c.infoBg,
-              borderColor: c.infoLine,
-              borderWidth: 1,
-              borderRadius: 12,
-              padding: 12,
-            }}
-          >
-            <Icon name="cloud-off" size={20} color={c.infoFg} />
-            <T v="caption" color={c.infoFg} style={{ flex: 1 }}>
-              You are offline. This saves on your phone and syncs automatically.
-            </T>
-          </View>
-        )}
       </ScrollView>
 
       <View

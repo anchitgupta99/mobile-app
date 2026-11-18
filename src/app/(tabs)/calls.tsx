@@ -218,13 +218,19 @@ export default function Calls() {
   const chips = activeChips(filters);
 
   const sections = useMemo(() => {
+    // As the web's history search: the typed text, any case, in the customer's name, the number as shown on the
+    // row (masked when the campaign masks it) or the disposition
     const term = q.trim().toLowerCase();
-    const digits = term.replace(/\D/g, '');
-    const name = (x: CallRecord) => contacts.find((ct) => ct.id === x.contactId)?.name.toLowerCase() ?? 'unknown';
+    const matches = (x: CallRecord) => {
+      const name = (contacts.find((ct) => ct.id === x.contactId)?.name || x.customerName || '').toLowerCase();
+      const phone = x.displayNumber ?? x.number;
+      const dispo = (x.disposition ?? '').toLowerCase();
+      return name.includes(term) || phone.includes(term) || dispo.includes(term);
+    };
     const groups = new Map<string, CallRecord[]>();
     calls
       .filter((x) => inDate(x, date))
-      .filter((x) => !term || name(x).includes(term) || (digits.length >= 3 && x.number.replace(/\D/g, '').includes(digits)))
+      .filter((x) => !term || matches(x))
       .filter((x) => filters.type === 'all' || typeOf(x) === filters.type)
       .filter((x) => filters.by === 'any' || (x.disconnectedBy ?? 'customer') === filters.by)
       .filter((x) => !filters.minMins || x.durationSec > filters.minMins * 60)
@@ -246,10 +252,10 @@ export default function Calls() {
         <View style={{ paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
           <View style={{ flex: 1 }}>
             <Field
-              label="Search lead"
+              label="Search leads"
               hideLabel
               icon="search"
-              placeholder="Search lead"
+              placeholder="Search leads..."
               value={q}
               onChangeText={setQ}
               autoCorrect={false}

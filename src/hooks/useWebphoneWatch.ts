@@ -1,6 +1,5 @@
 import { router, usePathname } from 'expo-router';
 import { useEffect, useRef } from 'react';
-import { USE_BACKEND } from '@/api/http';
 import { useSession } from '@/store/session';
 import { useCall } from '@/telephony/callStore';
 import { useSipPhone, type SipStatus } from '@/telephony/sip/sipPhone';
@@ -21,7 +20,7 @@ export function useWebphoneWatch() {
   }, [pathname]);
 
   useEffect(() => {
-    if (!USE_BACKEND || !live) return;
+    if (!live) return;
     return useSipPhone.subscribe((s, prev) => {
       if (!DOWN.includes(s.status) || DOWN.includes(prev.status)) return;
       const call = useCall.getState();

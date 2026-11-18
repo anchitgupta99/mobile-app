@@ -1,8 +1,6 @@
 export type AgentStatus = 'available' | 'break' | 'offline';
 
 export type CallMode = 'voip' | 'bridge';
-export type CallModePreference = 'auto' | 'voip' | 'bridge';
-export type RingDevice = 'auto' | 'app' | 'phone';
 
 export type CallDirection = 'inbound' | 'outbound';
 export type CallOutcome = 'answered' | 'missed' | 'no-answer' | 'busy' | 'failed';
@@ -54,6 +52,10 @@ export type Campaign = {
   listName: string;
   /** Backend: the campaign's wrap-up time (campaigns.wrap_up_time), after which the disposition is sent as it is */
   wrapUpSeconds?: number;
+  /** Backend: the campaign's dial type as the server has it (MANUAL, PREDICTIVE, PROGRESSIVE, PREVIEW…) */
+  dialType?: string;
+  /** Backend: whether agents may dial numbers themselves in this campaign (campaigns.allow_manual_calls) */
+  allowManualCalls?: boolean;
 };
 
 export type CallRecord = {
@@ -85,7 +87,6 @@ export type CallRecord = {
   campaignPrefix?: string | null;
   campaignName?: string;
   recordingUrl?: string | null;
-  fallbackUsed: boolean;
   updatedAt: string;
 };
 
@@ -160,7 +161,6 @@ export type DispositionConfig = {
   /** Backend: the template's switches for notes, callbacks and DND */
   prefs?: DispositionPrefs;
   dispositions: Disposition[];
-  script: string[];
 };
 
 export type BreakType = {
@@ -170,18 +170,9 @@ export type BreakType = {
   limitMinutes: number | null;
 };
 
+/** What the app loads from the server besides the lists: the tenant's break types */
 export type ServerConfig = {
   breakTypes: BreakType[];
-  modeThresholds: { maxLatencyMs: number; maxLossPct: number; maxJitterMs: number };
-  inboundFallbackSeconds: number;
-  featureFlags: Record<string, boolean>;
-};
-
-export type NetworkSample = {
-  type: 'wifi' | '4g' | '3g' | 'none';
-  latencyMs: number;
-  lossPct: number;
-  jitterMs: number;
 };
 
 export type DispositionPayload = {
@@ -194,10 +185,9 @@ export type DispositionPayload = {
   server?: Record<string, unknown>;
 };
 
+/** What a call shows on its screens; the caller's name and masked number come from the server (call context) */
 export type ScreenPop = {
-  contact: Contact | null;
   number: string;
-  openTasks: Task[];
-  lastDisposition: string | null;
+  /** The agent's campaign, shown on the incoming call screen */
   queue: string;
 };

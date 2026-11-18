@@ -84,6 +84,7 @@ function DialButton({ focused, onCall, label, onNavigate }: { focused: boolean; 
       tap('warning');
       return;
     }
+    // Not online, or manual calls turned off in the campaign: useDial says why and doesn't dial
     void dial({ number: num, source: 'keypad' }).then((ok) => ok && useDialpad.getState().clear());
   };
 

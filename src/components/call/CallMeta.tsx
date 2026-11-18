@@ -25,7 +25,7 @@ function MetaItem({ icon, label, value, tip }: { icon: IconName; label: string; 
   );
 }
 
-/** Campaign, list, dial mode and call UUID, matching the web call widget. */
+/** Campaign, list, call type and call UUID, matching the web call widget (its list pill only shows with a list). */
 export function CallMeta({ call }: { call: ActiveCall }) {
   const { c } = useTheme();
 
@@ -39,8 +39,8 @@ export function CallMeta({ call }: { call: ActiveCall }) {
     <View style={{ backgroundColor: c.callControl, borderRadius: 16, paddingVertical: 12, paddingHorizontal: 14, gap: 10 }}>
       <View style={{ flexDirection: 'row', gap: 12 }}>
         <MetaItem icon="campaign" label="Campaign" value={call.campaignName} tip={helpText.campaign} />
-        <MetaItem icon="list-alt" label="List" value={call.listName} tip={helpText.list} />
-        <MetaItem icon="dialpad" label="Dial mode" value={call.dialMode} tip={helpText.dialMode} />
+        {!!call.listName && <MetaItem icon="list-alt" label="List" value={call.listName} tip={helpText.list} />}
+        <MetaItem icon="dialpad" label="Call type" value={call.callType} tip={helpText.callType} />
       </View>
       <View style={{ height: 1, backgroundColor: c.onCallScreen2, opacity: 0.2 }} />
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>

@@ -3,27 +3,21 @@ import { ActivityIndicator, Pressable, ScrollView, TextInput, View } from 'react
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, { FadeIn, runOnJS } from 'react-native-reanimated';
-import { USE_BACKEND } from '@/api/http';
 import { CallMeta } from '@/components/call/CallMeta';
 import { ConferencePanel, ConsultView, TargetPicker } from '@/components/call/Transfer';
-import { InfoTip } from '@/components/InfoTip';
-import { ModeBadge } from '@/components/ModeBadge';
-import { helpText } from '@/domain/helpText';
 import { PressableScale } from '@/components/motion/PressableScale';
 import { RollingDigits } from '@/components/motion/RollingDigits';
 import { feedback } from '@/feedback';
 import { duration } from '@/theme/motion';
 import { useCallParty } from '@/components/PhoneText';
 import { Sheet } from '@/components/Sheet';
-import { notify } from '@/components/feedback';
-import { Avatar, Button, Field, Icon, Segmented, StatusChip, T, tap, type IconName } from '@/components/ui';
-import type { Contact } from '@/domain/types';
-import { formatDuration, formatRelative } from '@/domain/format';
+import { Avatar, Icon, Segmented, StatusChip, T, tap, type IconName } from '@/components/ui';
+import { formatDuration } from '@/domain/format';
+import { useCampaignScript } from '@/hooks/useCampaignScript';
 import { useNow } from '@/hooks/useNow';
-import { useData } from '@/store/data';
+import { useSession } from '@/store/session';
 import type { AudioRoute } from '@/store/settings';
 import { useCall } from '@/telephony/callStore';
-import { qualityLevel } from '@/telephony/networkCheck';
 import { font, useTheme } from '@/theme';
 
 function Control({
@@ -75,44 +69,6 @@ function Control({
   );
 }
 
-function QualityBars({ level }: { level: 0 | 1 | 2 | 3 }) {
-  const { c } = useTheme();
-  const color = level >= 3 ? c.signalOk : level === 2 ? c.signalWarn : c.signalDown;
-  const label = level >= 3 ? 'Good' : level === 2 ? 'Fair' : 'Poor';
-  return (
-    <View
-      accessibilityLabel={`Network quality ${label}`}
-      style={{
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 6,
-        paddingHorizontal: 10,
-        height: 26,
-        borderRadius: 13,
-        backgroundColor: c.callControl,
-      }}
-    >
-      <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: 2, height: 12 }}>
-        {[1, 2, 3].map((b) => (
-          <View
-            key={b}
-            style={{
-              width: 3,
-              height: 4 * b,
-              borderRadius: 1,
-              backgroundColor: b <= level ? color : c.onCallScreen2,
-              opacity: b <= level ? 1 : 0.35,
-            }}
-          />
-        ))}
-      </View>
-      <T v="caption" color={c.onCallScreen} style={{ fontFamily: font.semibold }}>
-        {label}
-      </T>
-    </View>
-  );
-}
-
 const pad = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '*', '0', '#'];
 
 export default function ActiveCall() {
@@ -121,7 +77,10 @@ export default function ActiveCall() {
   const call = useCall((s) => s.call);
   const notes = useCall((s) => (s.call ? (s.notes[s.call.id] ?? '') : ''));
   const { toggleMute, toggleHold, setRoute, sendDigit, end, setNote } = useCall.getState();
-  const script = useData((s) => s.dispositions.script);
+  // The campaign's script, only when the admin turned it on, as the web's call page shows it
+  const agentCampaignId = useSession((s) => s.agent?.campaignId);
+  const script = useCampaignScript(call?.campaignId ?? agentCampaignId);
+  const showScript = !!script?.enabled;
   const party = useCallParty();
   const now = useNow(500);
   const [panel, setPanel] = useState<'none' | 'keypad' | 'audio' | 'info'>('none');
@@ -132,25 +91,19 @@ export default function ActiveCall() {
   const conference = useCall((s) => s.conference);
 
   if (!call) return <View style={{ flex: 1, backgroundColor: c.callScreen }} />;
-  const who = party(call, call.pop.contact?.name);
+  // The Script tab can go away (the call's campaign changed to one without a script): back to Notes then
+  const tab = infoTab === 'script' && !showScript ? 'notes' : infoTab;
+  const who = party(call);
   const name = who.name;
   const live = call.state === 'connected' || call.state === 'held';
   const stateText =
-    call.state === 'checking'
-      ? 'Checking network…'
-      : call.state === 'dialing'
-        ? call.mode === 'bridge'
-          ? call.direction === 'inbound'
-            ? 'Connecting…'
-            : 'Calling your phone line…'
-          : 'Calling…'
-        : call.state === 'ringing'
-          ? call.mode === 'bridge'
-            ? 'Answer your phone to connect'
-            : 'Ringing…'
-          : call.state === 'held'
-            ? 'On hold'
-            : formatDuration((now - (call.connectedAt ?? now)) / 1000);
+    call.state === 'checking' || call.state === 'dialing'
+      ? 'Calling…'
+      : call.state === 'ringing'
+        ? 'Ringing…'
+        : call.state === 'held'
+          ? 'On hold'
+          : formatDuration((now - (call.connectedAt ?? now)) / 1000);
   const routeIcon: IconName = call.route === 'speaker' ? 'volume-up' : call.route === 'bluetooth' ? 'bluetooth-audio' : 'phone-in-talk';
 
   const openInfo = () => setPanel('info');
@@ -163,14 +116,6 @@ export default function ActiveCall() {
   return (
     <View style={{ flex: 1, backgroundColor: c.callScreen, paddingTop: insets.top + 12, paddingBottom: insets.bottom + 20 }}>
       <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 8, flexWrap: 'wrap', paddingHorizontal: 16 }}>
-        <InfoTip {...helpText.callMode}>
-          <ModeBadge mode={call.mode} onDark />
-        </InfoTip>
-        {call.mode === 'voip' && live && call.quality && (
-          <Animated.View key={qualityLevel(call.quality)} entering={FadeIn.duration(duration.base)}>
-            <QualityBars level={qualityLevel(call.quality)} />
-          </Animated.View>
-        )}
         {live && (
           <View
             style={{
@@ -247,21 +192,6 @@ export default function ActiveCall() {
               {stateText}
             </T>
           )}
-          {call.verdict && call.state !== 'connected' && !call.modeOverridden && (
-            <T v="caption" color={c.onCallScreen2} style={{ textAlign: 'center' }}>
-              {call.verdict.mode === 'bridge' ? `Using phone line: ${call.verdict.reason.toLowerCase()}` : call.verdict.reason}
-            </T>
-          )}
-          {call.mode === 'bridge' && live && (
-            <T v="caption" color={c.onCallScreen2} style={{ textAlign: 'center', maxWidth: 300 }}>
-              Audio is on your phone line. These controls act on the call.
-            </T>
-          )}
-          {call.mode === 'voip' && live && call.quality && qualityLevel(call.quality) <= 1 && (
-            <View style={{ marginTop: 6 }}>
-              <StatusChip tone="warning" icon="signal-cellular-alt-1-bar" label="Weak network. Audio may break up." />
-            </View>
-          )}
           {!!call.error && <StatusChip tone="error" label={call.error} />}
         </View>
       )}
@@ -316,7 +246,7 @@ export default function ActiveCall() {
         <GestureDetector gesture={swipeUp}>
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="Open contact, notes and script"
+            accessibilityLabel={showScript ? 'Open contact, notes and script' : 'Open contact and notes'}
             onPress={() => setPanel('info')}
             style={{ marginHorizontal: 20, marginBottom: 20, borderRadius: 16, backgroundColor: c.callControl, padding: 14, gap: 4 }}
           >
@@ -334,7 +264,7 @@ export default function ActiveCall() {
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
               <Icon name="notes" size={18} color={c.onCallScreen} />
               <T v="bodyStrong" color={c.onCallScreen} style={{ flex: 1 }} numberOfLines={1}>
-                {notes ? notes : 'Contact · Notes · Script'}
+                {notes ? notes : showScript ? 'Contact · Notes · Script' : 'Contact · Notes'}
               </T>
               <Icon name="expand-less" color={c.onCallScreen} />
             </View>
@@ -373,7 +303,6 @@ export default function ActiveCall() {
           label={call.route === 'speaker' ? 'Speaker' : call.route === 'bluetooth' ? 'Bluetooth' : 'Audio'}
           active={call.route !== 'earpiece'}
           onPress={() => setPanel('audio')}
-          disabled={call.mode === 'bridge'}
         />
         <Control
           icon={call.state === 'held' ? 'play-arrow' : 'pause'}
@@ -506,15 +435,16 @@ export default function ActiveCall() {
 
       <Sheet open={panel === 'info'} onClose={() => setPanel('none')} title={name} scroll={false}>
         <Segmented
-          value={infoTab}
+          value={tab}
           onChange={setInfoTab}
           options={[
             { value: 'contact', label: 'Contact' },
             { value: 'notes', label: 'Notes' },
-            { value: 'script', label: 'Script' },
+            // Only for a campaign with its script turned on, as the web
+            ...(showScript ? [{ value: 'script' as const, label: 'Script' }] : []),
           ]}
         />
-        {infoTab === 'notes' && (
+        {tab === 'notes' && (
           <TextInput
             multiline
             autoFocus
@@ -536,53 +466,31 @@ export default function ActiveCall() {
             }}
           />
         )}
-        {infoTab === 'script' && (
-          <ScrollView style={{ maxHeight: 320 }} contentContainerStyle={{ gap: 10 }}>
-            {script.map((line, i) => (
-              <View key={i} style={{ flexDirection: 'row', gap: 12 }}>
-                <View
-                  style={{
-                    width: 26,
-                    height: 26,
-                    borderRadius: 13,
-                    backgroundColor: c.lavenderSoft,
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  <T v="label" color={c.navy}>
-                    {i + 1}
-                  </T>
-                </View>
-                <T v="body" style={{ flex: 1 }}>
-                  {line}
+        {/* The web's Script tab: its heading and line, then the campaign's text as written */}
+        {tab === 'script' && script && (
+          <ScrollView style={{ maxHeight: 320 }} contentContainerStyle={{ gap: 12 }}>
+            <View style={{ gap: 2 }}>
+              <T v="bodyStrong">Campaign Script</T>
+              <T v="caption">Read-only script for this campaign</T>
+            </View>
+            {script.text ? (
+              <View style={{ borderWidth: 1, borderColor: c.line, borderRadius: 10, padding: 14, backgroundColor: c.subtle }}>
+                <T v="body" selectable>
+                  {script.text}
                 </T>
               </View>
-            ))}
-          </ScrollView>
-        )}
-        {infoTab === 'contact' && (
-          <ScrollView style={{ maxHeight: 420 }} contentContainerStyle={{ gap: 12, minHeight: 160 }} keyboardShouldPersistTaps="handled">
-            {call.pop.contact ? (
-              <>
-                <CrmEditor contactId={call.pop.contact.id} live={live} />
-                <InfoLine label="Last disposition" value={call.pop.lastDisposition ?? 'First contact'} />
-                <InfoLine
-                  label="Open callbacks"
-                  value={call.pop.openTasks.map((t) => `${t.title} · ${formatRelative(t.dueAt)}`).join('\n') || 'None'}
-                />
-              </>
-            ) : USE_BACKEND ? (
-              // The customer as the server has them (call context), with the web's Lead Details labels
-              <>
-                <InfoLine label="Customer Name" value={call.customerName || '—'} />
-                <InfoLine label="Mobile Number" value={who.number || '—'} />
-              </>
             ) : (
-              <T v="body" color={c.ink2}>
-                Unknown number. There is no lead record to edit for this call.
+              <T v="body" color={c.ink2} style={{ textAlign: 'center', paddingVertical: 16 }}>
+                No script text provided for this campaign.
               </T>
             )}
+          </ScrollView>
+        )}
+        {tab === 'contact' && (
+          <ScrollView style={{ maxHeight: 420 }} contentContainerStyle={{ gap: 12, minHeight: 160 }} keyboardShouldPersistTaps="handled">
+            {/* The customer as the server has them (call context), with the web's Lead Details labels */}
+            <InfoLine label="Customer Name" value={call.customerName || '—'} />
+            <InfoLine label="Mobile Number" value={who.number || '—'} />
           </ScrollView>
         )}
       </Sheet>
@@ -595,55 +503,6 @@ function InfoLine({ label, value }: { label: string; value: string }) {
     <View>
       <T v="caption">{label}</T>
       <T v="bodyStrong">{value}</T>
-    </View>
-  );
-}
-
-type CrmDraft = Pick<Contact, 'name' | 'company' | 'email' | 'city'>;
-
-/** CRM fields are editable only while the call is live; they lock the moment it ends. */
-function CrmEditor({ contactId, live }: { contactId: string; live: boolean }) {
-  const { c } = useTheme();
-  const contact = useData((s) => s.contacts.find((x) => x.id === contactId));
-  const updateContact = useData((s) => s.updateContact);
-  const [draft, setDraft] = useState<CrmDraft | null>(null);
-  if (!contact) return null;
-  const v: CrmDraft = draft ?? { name: contact.name, company: contact.company, email: contact.email, city: contact.city };
-  const changed = (Object.keys(v) as (keyof CrmDraft)[]).filter((k) => v[k].trim() !== contact[k]);
-  const field = (k: keyof CrmDraft, label: string, extra?: object) => (
-    <Field
-      label={label}
-      value={v[k]}
-      editable={live}
-      onChangeText={(t) => setDraft({ ...v, [k]: t })}
-      autoCapitalize={k === 'email' ? 'none' : 'words'}
-      {...extra}
-    />
-  );
-  return (
-    <View style={{ gap: 12 }}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-        <Icon name={live ? 'edit' : 'lock-outline'} size={16} color={c.ink3} />
-        <T v="caption" color={c.ink3} style={{ flex: 1 }}>
-          {live ? 'Editable while the call is live. Locks when the call ends.' : 'Locked until the call connects.'}
-        </T>
-      </View>
-      {field('name', 'Name')}
-      {field('company', 'Company')}
-      {field('email', 'Email', { keyboardType: 'email-address' })}
-      {field('city', 'City')}
-      {live && changed.length > 0 && (
-        <Button
-          label="Save to CRM"
-          icon="check"
-          full
-          onPress={() => {
-            updateContact(contact.id, Object.fromEntries(changed.map((k) => [k, v[k].trim()])));
-            setDraft(null);
-            notify('Lead updated', 'success');
-          }}
-        />
-      )}
     </View>
   );
 }

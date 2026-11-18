@@ -1,15 +1,12 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, TextInput, View } from 'react-native';
 import Animated, { FadeIn, FadeInDown, FadeOut, LinearTransition } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { api, type BackendAgent } from '@/api/client';
-import { USE_BACKEND } from '@/api/http';
 import { feedback } from '@/feedback';
 import { formatDuration } from '@/domain/format';
 import { useNow } from '@/hooks/useNow';
-import { IS_DEMO } from '@/mocks/demo';
-import { colleagues, type Colleague } from '@/mocks/seed';
-import { useCall, type Consult, type ConsultState, type Leg } from '@/telephony/callStore';
+import { useCall, type Consult, type Leg } from '@/telephony/callStore';
 import { font, useTheme } from '@/theme';
 import { duration } from '@/theme/motion';
 import { PressableScale } from '../motion/PressableScale';
@@ -31,6 +28,9 @@ const pad: [string, string][] = [
   ['0', '+'],
   ['#', ''],
 ];
+
+/** A colleague to transfer to or add: one of the server's signed-in agents */
+type Colleague = { id: string; name: string; team: string; ext: string; presence: 'available' | 'away' | 'busy' };
 
 const countries = [
   { code: '+1', name: 'United States / Canada' },
@@ -91,7 +91,7 @@ export function CallStrip({ onMinimise, title }: { onMinimise: () => void; title
   const party = useCallParty();
   const now = useNow(500);
   if (!call) return null;
-  const name = party(call, call.pop.contact?.name).name;
+  const name = party(call).name;
   const t = call.connectedAt ? formatDuration((now - call.connectedAt) / 1000) : '0:00';
   return (
     <View
@@ -165,12 +165,11 @@ function toColleague(a: BackendAgent): Colleague {
   };
 }
 
-/** Colleagues to pick: the server's signed-in agents (searched as you type), or the demo's list */
+/** Colleagues to pick: the server's signed-in agents, searched as you type */
 function useColleagues(q: string) {
   const [remote, setRemote] = useState<Colleague[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    if (!USE_BACKEND) return;
     let gone = false;
     const t = setTimeout(() => {
       api.liveCalls
@@ -187,11 +186,7 @@ function useColleagues(q: string) {
       clearTimeout(t);
     };
   }, [q]);
-  const demo = useMemo(() => {
-    const t = q.trim().toLowerCase();
-    return colleagues.filter((a) => !t || a.name.toLowerCase().includes(t) || a.ext.includes(t) || a.team.toLowerCase().includes(t));
-  }, [q]);
-  return USE_BACKEND ? { list: remote ?? [], loading: remote === null && !error, error } : { list: demo, loading: false, error: null };
+  return { list: remote ?? [], loading: remote === null && !error, error };
 }
 
 function InternalList({ kind, onPick }: { kind: Consult['kind']; onPick: (c: Colleague) => void }) {
@@ -225,7 +220,7 @@ function InternalList({ kind, onPick }: { kind: Consult['kind']; onPick: (c: Col
       <ScrollView contentContainerStyle={{ gap: 4, paddingBottom: 16 }} keyboardShouldPersistTaps="handled">
         {list.map((a) => {
           // On the server only a READY agent can take the call, as on the web
-          const blocked = USE_BACKEND && a.presence !== 'available';
+          const blocked = a.presence !== 'available';
           return (
             <Animated.View key={a.id} entering={FadeIn.duration(duration.base)} layout={LinearTransition.duration(duration.base)}>
               <Pressable
@@ -524,63 +519,26 @@ function PartyCard({ name, role, right, sub }: { name: string; role: string; rig
   );
 }
 
-function Chip({ label, on, tone, onPress }: { label: string; on: boolean; tone: 'ok' | 'bad' | 'info'; onPress?: () => void }) {
-  const { c } = useTheme();
-  const t =
-    tone === 'bad'
-      ? { bg: c.errorBg, fg: c.errorFg }
-      : tone === 'ok'
-        ? { bg: c.successBg, fg: c.successFg }
-        : { bg: c.infoBg, fg: c.infoFg };
-  return (
-    <Pressable
-      accessibilityRole={onPress ? 'button' : undefined}
-      accessibilityState={{ selected: on }}
-      disabled={!onPress}
-      onPress={() => {
-        tap();
-        onPress?.();
-      }}
-      style={{
-        paddingHorizontal: 12,
-        height: 32,
-        borderRadius: 16,
-        justifyContent: 'center',
-        backgroundColor: on ? t.bg : 'transparent',
-        borderWidth: 1,
-        borderColor: on ? t.fg : c.callControlActive,
-      }}
-    >
-      <T v="label" color={on ? t.fg : c.onCallScreen2}>
-        {label}
-      </T>
-    </Pressable>
-  );
-}
-
-const failLabel: Partial<Record<ConsultState, string>> = { busy: 'Busy', 'no-answer': 'No answer', declined: 'Declined' };
-
 /** Consult-before-transfer, or calling a participant before merging them in. */
 export function ConsultView({ onMinimise }: { onMinimise: () => void }) {
   const { c } = useTheme();
   const insets = useSafeAreaInsets();
   const call = useCall((s) => s.call);
   const consult = useCall((s) => s.consult);
-  const { cancelConsult, completeTransfer, mergeConsult, setConsultState } = useCall.getState();
+  const { cancelConsult } = useCall.getState();
   const party = useCallParty();
   const now = useNow(500);
   if (!call || !consult) return null;
 
   const transfer = consult.kind === 'transfer';
   const failed = consult.state === 'busy' || consult.state === 'no-answer' || consult.state === 'declined';
-  const answered = consult.state === 'answered';
-  const customer = party(call, call.pop.contact?.name).name;
+  const customer = party(call).name;
   const targetTime = consult.answeredAt ? formatDuration((now - consult.answeredAt) / 1000) : null;
 
   const targetStatus = failed ? (
     <T v="label" color={c.errorFg}>
       {/* The web's failed transfer / conference reads "Call Failed" over the reason */}
-      {USE_BACKEND ? 'Call Failed' : failLabel[consult.state]}
+      Call Failed
     </T>
   ) : targetTime ? (
     <T v="label" color={c.signalOk} nums>
@@ -610,13 +568,7 @@ export function ConsultView({ onMinimise }: { onMinimise: () => void }) {
         }
       />
       <T v="overline" color={c.onCallScreen2} style={{ paddingHorizontal: 4 }}>
-        {USE_BACKEND
-          ? transfer
-            ? 'Transferring'
-            : 'Adding to conference'
-          : transfer
-            ? 'Consulting transfer target'
-            : 'Merge into conference'}
+        {transfer ? 'Transferring' : 'Adding to conference'}
       </T>
       <Animated.View entering={FadeInDown.duration(duration.base)} style={{ gap: 10 }}>
         <PartyCard
@@ -635,94 +587,26 @@ export function ConsultView({ onMinimise }: { onMinimise: () => void }) {
         />
       </Animated.View>
 
-      {/* Backend: the server rings them and connects them itself the moment they answer, as on the web */}
-      {USE_BACKEND ? (
-        <View style={{ gap: 8, paddingHorizontal: 4 }}>
-          {failed && (
-            <T v="h3" color={c.errorFg}>
-              Call Failed
-            </T>
-          )}
-          <T v="body" color={c.onCallScreen}>
-            {failed
-              ? (consult.error ?? 'Failed. Please try again.')
-              : transfer
-                ? `Ringing ${consult.target.name}. ${customer.split(' ')[0]} goes to them as soon as they answer, and this call moves to wrap-up.`
-                : `Ringing ${consult.target.name}. They join the call as soon as they answer.`}
+      {/* The server rings them and connects them itself the moment they answer, as on the web */}
+      <View style={{ gap: 8, paddingHorizontal: 4 }}>
+        {failed && (
+          <T v="h3" color={c.errorFg}>
+            Call Failed
           </T>
-        </View>
-      ) : (
-        <View style={{ gap: 8, paddingHorizontal: 4 }}>
-          <T v="label" color={c.onCallScreen2}>
-            {transfer ? 'If the target doesn’t answer' : 'Status'}
-          </T>
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-            {transfer ? (
-              (['busy', 'no-answer', 'declined'] as const).map((st) => (
-                <Chip
-                  key={st}
-                  label={failLabel[st]!}
-                  tone="bad"
-                  on={consult.state === st}
-                  onPress={IS_DEMO && consult.state === 'calling' ? () => setConsultState(st) : undefined}
-                />
-              ))
-            ) : (
-              <>
-                <Chip label="Calling participant…" tone="info" on={consult.state === 'calling'} />
-                <Chip label="Merge in progress" tone="ok" on={consult.state === 'merging'} />
-                {failed && <Chip label={failLabel[consult.state]!} tone="bad" on />}
-              </>
-            )}
-          </View>
-          {IS_DEMO && transfer && consult.state === 'calling' && (
-            <T v="caption" color={c.onCallScreen2}>
-              Prototype: tap a chip to simulate the target not answering.
-            </T>
-          )}
-          {failed && (
-            <Animated.View entering={FadeIn.duration(duration.base)}>
-              <T v="body" color={c.onCallScreen}>
-                {consult.target.name} {consult.state === 'busy' ? 'is busy' : consult.state === 'declined' ? 'declined' : 'didn’t answer'}.
-                Cancel to return to {customer.split(' ')[0]}.
-              </T>
-            </Animated.View>
-          )}
-        </View>
-      )}
+        )}
+        <T v="body" color={c.onCallScreen}>
+          {failed
+            ? (consult.error ?? 'Failed. Please try again.')
+            : transfer
+              ? `Ringing ${consult.target.name}. ${customer.split(' ')[0]} goes to them as soon as they answer, and this call moves to wrap-up.`
+              : `Ringing ${consult.target.name}. They join the call as soon as they answer.`}
+        </T>
+      </View>
 
       <View style={{ flex: 1 }} />
       <Animated.View exiting={FadeOut.duration(duration.fast)} style={{ gap: 10, paddingBottom: Math.max(0, 8 - insets.bottom) }}>
-        {!USE_BACKEND && (
-          <PressableScale
-            accessibilityRole="button"
-            accessibilityState={{ disabled: !answered }}
-            disabled={!answered}
-            scaleTo={0.97}
-            onPress={() => {
-              feedback('press');
-              if (transfer) completeTransfer();
-              else mergeConsult();
-            }}
-            style={{
-              height: 56,
-              borderRadius: 16,
-              backgroundColor: c.callControlActive,
-              alignItems: 'center',
-              justifyContent: 'center',
-              flexDirection: 'row',
-              gap: 8,
-              opacity: answered ? 1 : 0.4,
-            }}
-          >
-            <Icon name={transfer ? 'phone-forwarded' : 'call-merge'} color={c.onCallControlActive} />
-            <T v="h3" color={c.onCallControlActive}>
-              {transfer ? 'Complete transfer' : consult.state === 'merging' ? 'Merging…' : 'Merge calls'}
-            </T>
-          </PressableScale>
-        )}
         {/* The server's request can't be called off once it's ringing them; after a failure this goes back */}
-        {(!USE_BACKEND || failed) && (
+        {failed && (
           <PressableScale
             accessibilityRole="button"
             scaleTo={0.97}
@@ -740,7 +624,7 @@ export function ConsultView({ onMinimise }: { onMinimise: () => void }) {
             }}
           >
             <T v="h3" color={c.onCallScreen}>
-              {USE_BACKEND ? 'Back to call' : 'Cancel'}
+              Back to call
             </T>
           </PressableScale>
         )}

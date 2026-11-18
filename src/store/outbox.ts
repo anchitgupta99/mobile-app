@@ -1,9 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { api, ApiError } from '@/api/client';
-import { USE_BACKEND } from '@/api/http';
-import { isOnline } from '@/api/network';
-import type { AgentStatus, CallRecord, Contact, DispositionPayload, Task } from '@/domain/types';
+import type { AgentStatus, Contact, Task } from '@/domain/types';
 import { uid } from '@/domain/format';
 import { storage } from './storage';
 
@@ -19,10 +17,8 @@ type Base = {
 };
 
 export type OutboxItem =
-  | (Base & { kind: 'disposition'; payload: DispositionPayload })
   | (Base & { kind: 'task'; payload: Task })
   | (Base & { kind: 'contact'; payload: { id: string; patch: Partial<Contact> } })
-  | (Base & { kind: 'call'; payload: CallRecord })
   | (Base & { kind: 'status'; payload: { status: AgentStatus; breakCode: string | null; campaignId?: string } });
 
 type NewItem = OutboxItem extends infer T
@@ -54,14 +50,10 @@ type OutboxState = {
 
 async function send(item: OutboxItem) {
   switch (item.kind) {
-    case 'disposition':
-      return api.calls.disposition(item.key, item.payload);
     case 'task':
       return api.tasks.upsert(item.key, item.payload);
     case 'contact':
       return api.contacts.update(item.key, item.payload.id, item.payload.patch);
-    case 'call':
-      return api.calls.upsert(item.key, item.payload);
     case 'status':
       return api.agents.setStatus(item.payload.status, item.payload.breakCode, item.payload.campaignId);
   }
@@ -81,8 +73,7 @@ function webFailureText(item: OutboxItem): string | null {
 export function pendingIds(items: OutboxItem[]) {
   const ids = new Set<string>();
   items.forEach((i) => {
-    if (i.kind === 'disposition') ids.add(i.payload.callId);
-    else if (i.kind !== 'status') ids.add(i.payload.id);
+    if (i.kind !== 'status') ids.add(i.payload.id);
   });
   return ids;
 }
@@ -100,25 +91,18 @@ export const useOutbox = create<OutboxState>()(
         failure: null,
         enqueue: (item) => {
           const full = { ...item, key: uid('idem'), attempts: 0, createdAt: new Date().toISOString() } as OutboxItem;
-          if (USE_BACKEND) {
-            // As the web, which has no queue: each change goes to the server once, straight away, and a failure
-            // is shown right then (or not at all, where the web shows nothing). No retries, so nothing is sent twice.
-            void send(full).catch(() => {
-              const message = webFailureText(full);
-              if (message) set({ failure: { at: Date.now(), message } });
-            });
-            return;
-          }
-          set((s) => ({
-            items: full.kind === 'status' ? [...s.items.filter((i) => i.kind !== 'status'), full] : [...s.items, full],
-          }));
-          void get().flush();
+          // As the web, which has no queue: each change goes to the server once, straight away, and a failure is
+          // shown right then (or not at all, where the web shows nothing). No retries, so nothing is sent twice.
+          void send(full).catch(() => {
+            const message = webFailureText(full);
+            if (message) set({ failure: { at: Date.now(), message } });
+          });
         },
         flush: () => {
           // Callers that await flush() (e.g. sync before merging) must wait for the run already in
           // progress, not return early and read half-flushed state.
           if (inflight) return inflight;
-          if (!isOnline() || !get().items.some((i) => !i.parked)) return Promise.resolve();
+          if (!get().items.some((i) => !i.parked)) return Promise.resolve();
           inflight = runFlush().finally(() => {
             inflight = null;
           });
