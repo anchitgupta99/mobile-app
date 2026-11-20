@@ -1,5 +1,6 @@
 import { UA, WebSocketInterface } from 'jssip';
 import type { RTCSession } from 'jssip/lib/RTCSession';
+import type { IncomingRTCSessionEvent, OutgoingRTCSessionEvent } from 'jssip/lib/UA';
 import { create } from 'zustand';
 import { api, type WebphoneConfig } from '@/api/client';
 import { DEMO } from '@/api/http';
@@ -22,7 +23,7 @@ type SipPhoneState = {
   extension: string | null;
   start: () => Promise<void>;
   stop: () => void;
-  /** Drops the user agent and registers again (Re-run checks, back from the background after a failure) */
+  /** Drops the user agent and registers again (Re-run checks, back from the background after a failure); never during a call */
   retry: () => Promise<void>;
 };
 
@@ -52,9 +53,11 @@ type CallHandlers = {
   accept: (call: IncomingSipCall) => boolean;
   /** The webphone's call ended, from either side */
   ended: () => void;
+  /** Whether the agent is on a call (dialing included): retry() leaves the user agent alone then */
+  busy: () => boolean;
 };
 
-let handlers: CallHandlers = { accept: () => false, ended: () => undefined };
+let handlers: CallHandlers = { accept: () => false, ended: () => undefined, busy: () => false };
 
 /** The call store registers how calls are taken and finished */
 export function setSipCallHandlers(h: CallHandlers) {
@@ -64,7 +67,10 @@ export function setSipCallHandlers(h: CallHandlers) {
 let ua: UA | null = null;
 // Bumped by every start and stop: a start still waiting on the config must not register after a logout
 let generation = 0;
+// The agent's call (the customer's), and apart from it a supervisor listening, whispering or barging in: that
+// one comes and goes on its own and never ends, blocks or replaces the agent's call
 let session: RTCSession | null = null;
+let intervention: RTCSession | null = null;
 let micStream: MediaStream | null = null;
 let iceServers: RTCIceServer[] = [];
 
@@ -132,7 +138,7 @@ type GatheringPc = {
 /** Longest the answer waits for a public (STUN or TURN) address before it goes out with what there is */
 const PUBLIC_ADDRESS_WAIT_MS = 4000;
 
-function watchSession(s: RTCSession) {
+function watchSession(s: RTCSession, role: 'call' | 'intervention') {
   const t0 = Date.now();
   const at = () => `+${Date.now() - t0}ms`;
 
@@ -204,6 +210,10 @@ function watchSession(s: RTCSession) {
   const finish = (cause: string) => {
     if (quietTimer) clearTimeout(quietTimer);
     if (capTimer) clearTimeout(capTimer);
+    if (role === 'intervention') {
+      if (intervention === s) intervention = null;
+      return log('supervisor session ended', cause);
+    }
     if (session !== s) return;
     session = null;
     log('call ended', cause);
@@ -267,7 +277,8 @@ function createUA(cfg: WebphoneConfig, set: (p: Partial<SipPhoneState>) => void)
     });
   });
 
-  next.on('newRTCSession', (e) => {
+  // jssip types this listener as a union of two, so its event can't be inferred: say it
+  next.on('newRTCSession', (e: IncomingRTCSessionEvent | OutgoingRTCSessionEvent) => {
     if (e.originator !== 'remote') return;
     const incoming = e.session;
     const header = (...names: string[]) => names.map((n) => e.request.getHeader(n)).find((v) => !!v) || null;
@@ -286,8 +297,10 @@ function createUA(cfg: WebphoneConfig, set: (p: Partial<SipPhoneState>) => void)
       campaignId: header('X-Campaign-ID'),
     };
     log('incoming call', call);
-    // One call at a time, as on the web: a second one is left for the server to time out
-    if (session && !session.isEnded()) return log('already on a call, ignoring it');
+    // One call at a time, as on the web: a second one is left for the server to time out. A supervisor's session
+    // is apart: it can join during the agent's call, one at a time
+    const live = (x: RTCSession | null) => !!x && !x.isEnded();
+    if (call.intervention ? live(intervention) : live(session)) return log('already on a call, ignoring it');
     // The web's filter: a call without a customer, a transfer, a conference, auto-answer or a supervisor
     // isn't one the server put through for the agent, so it's left unanswered
     if (!call.customerNumber && !call.transfer && !call.conference && !call.autoAnswer && !call.intervention) {
@@ -298,8 +311,9 @@ function createUA(cfg: WebphoneConfig, set: (p: Partial<SipPhoneState>) => void)
       incoming.terminate({ status_code: 486, reason_phrase: 'Busy Here' });
       return;
     }
-    session = incoming;
-    watchSession(incoming);
+    if (call.intervention) intervention = incoming;
+    else session = incoming;
+    watchSession(incoming, call.intervention ? 'intervention' : 'call');
     void answer(incoming);
   });
   return next;
@@ -359,10 +373,13 @@ export const useSipPhone = create<SipPhoneState>((set, get) => ({
   stop: () => {
     generation++;
     hangupSip();
+    if (intervention && !intervention.isEnded()) intervention.terminate();
+    intervention = null;
     const current = ua;
     ua = null;
     if (current) {
-      current.removeAllListeners();
+      // UA is an EventEmitter, but its base type comes from Node's 'events', which this project's types leave out
+      (current as unknown as { removeAllListeners: () => void }).removeAllListeners();
       // Unregisters and closes the socket
       current.stop();
     }
@@ -371,6 +388,8 @@ export const useSipPhone = create<SipPhoneState>((set, get) => ({
     set({ status: 'idle', detail: null, extension: null });
   },
   retry: async () => {
+    // stop() hangs up the call: a registration that failed mid-call waits until it's over (JsSIP keeps refreshing)
+    if (handlers.busy() || (session && !session.isEnded())) return log('on a call, not re-registering now');
     get().stop();
     await get().start();
   },

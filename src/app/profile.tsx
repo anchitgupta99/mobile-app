@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, KeyboardAvoidingView, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { api, type AgentProfile } from '@/api/client';
@@ -50,9 +50,11 @@ export default function Profile() {
   const [saving, setSaving] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
 
-  // Backend: the profile from the server (null while loading); a failed load keeps the login's details
+  // Backend: the profile from the server (null while loading); a failed load keeps the login's details and says
+  // so, with Retry (bumps `reload`), since editing needs the server's copy
   const [profile, setProfile] = useState<AgentProfile | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
+  const [reload, setReload] = useState(0);
   const campaignId = agent?.campaignId;
   useEffect(() => {
     let gone = false;
@@ -63,7 +65,11 @@ export default function Profile() {
     return () => {
       gone = true;
     };
-  }, [campaignId]);
+  }, [campaignId, reload]);
+
+  // Guards read at tap time (render state lags a fast double tap)
+  const savingRef = useRef(false);
+  const pwSavingRef = useRef(false);
 
   // Change password, as the web's "Change Password"
   const [pwOpen, setPwOpen] = useState(false);
@@ -99,8 +105,9 @@ export default function Profile() {
   };
 
   const save = async () => {
-    if (saving) return;
+    if (savingRef.current) return;
     const next = { name: draft.name.trim(), email: draft.email.trim(), phone: draft.phone.trim() };
+    savingRef.current = true;
     setSaving(true);
     setEditError(null);
     try {
@@ -115,13 +122,24 @@ export default function Profile() {
       setEditError(message);
       notify(message, 'error', undefined, { title: 'Error' });
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
 
   const changePassword = async () => {
-    if (pwSaving) return;
+    if (pwSavingRef.current) return;
+    // Checked here first, so an empty or mistyped form isn't sent
+    if (!pw.current || !pw.next || !pw.confirm) {
+      setPwError('Please fill in all the password fields.');
+      return;
+    }
+    if (pw.next !== pw.confirm) {
+      setPwError('Passwords do not match');
+      return;
+    }
     setPwError(null);
+    pwSavingRef.current = true;
     setPwSaving(true);
     try {
       await api.profile.changePassword({ currentPassword: pw.current, newPassword: pw.next, confirmPassword: pw.confirm });
@@ -133,6 +151,7 @@ export default function Profile() {
       setPwError(message);
       notify(message, 'error', undefined, { title: 'Error' });
     } finally {
+      pwSavingRef.current = false;
       setPwSaving(false);
     }
   };
@@ -162,6 +181,24 @@ export default function Profile() {
           <View style={{ alignItems: 'center', paddingVertical: 8 }}>
             <ActivityIndicator color={c.purple} />
           </View>
+        )}
+
+        {!profile && loadFailed && (
+          <Card style={{ gap: 10 }}>
+            <T v="caption" color={c.errorFg}>
+              {"Couldn't load your profile, so it can't be edited right now."}
+            </T>
+            <Button
+              label="Retry"
+              icon="refresh"
+              variant="outline"
+              size="sm"
+              onPress={() => {
+                setLoadFailed(false);
+                setReload((n) => n + 1);
+              }}
+            />
+          </Card>
         )}
 
         {editing ? (

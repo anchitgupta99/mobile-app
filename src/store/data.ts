@@ -31,7 +31,11 @@ type DataState = {
   addCall: (call: CallRecord) => void;
   /** Backend: resolves once the server accepted it and rejects with its reason; demo: queued, resolves at once */
   saveDisposition: (payload: DispositionPayload, extra?: { label: string }) => Promise<void>;
-  upsertTask: (task: Task) => void;
+  /**
+   * revertTo: the task as it was, put back if the server turns the change down (unless it was changed again
+   * meanwhile); failureText: the toast for that failure
+   */
+  upsertTask: (task: Task, opts?: { revertTo?: Task; failureText?: string }) => void;
   completeTask: (id: string) => void;
   snoozeTask: (id: string, minutes: number) => void;
   updateContact: (id: string, patch: Partial<Contact>) => void;
@@ -54,19 +58,46 @@ export function mergeById<T extends { id: string; updatedAt: string }>(local: T[
 /**
  * Backend: the server's call history is the list. A call made in the app keeps its own id once the server
  * lists it (wrap-up and links find it by that id), and stays on its own for a day until the server lists it.
+ * The server's row lacks the call context the app keeps (list, campaign prefix, often the lead, the screen-pop
+ * name and masked number), which the disposition needs, so those carry over; and the call in wrap-up (keepId)
+ * stays exactly as it is until it is dispositioned.
  */
-export function withServerCalls(local: CallRecord[], server: CallRecord[], pending: Set<string>) {
+export function withServerCalls(local: CallRecord[], server: CallRecord[], pending: Set<string>, keepId?: string | null) {
   const mineByUuid = new Map(local.filter((c) => c.uuid && c.id !== c.uuid).map((c) => [c.uuid as string, c]));
   const merged = server.map((r) => {
     const mine = mineByUuid.get(r.uuid ?? '');
     if (!mine) return r;
     // A disposition still queued here is newer than the server's row
-    return pending.has(mine.id) ? mine : { ...r, id: mine.id, contactId: mine.contactId ?? r.contactId };
+    if (pending.has(mine.id) || mine.id === keepId) return mine;
+    return {
+      ...r,
+      id: mine.id,
+      contactId: mine.contactId ?? r.contactId,
+      leadId: r.leadId ?? mine.leadId,
+      listId: r.listId ?? mine.listId,
+      campaignPrefix: r.campaignPrefix ?? mine.campaignPrefix,
+      customerName: r.customerName ?? mine.customerName,
+      displayNumber: r.displayNumber ?? mine.displayNumber,
+    };
   });
   const listed = new Set(server.map((r) => r.uuid));
   const dayAgo = Date.now() - 86400000;
   const notYetListed = local.filter((c) => c.id !== c.uuid && !listed.has(c.uuid) && Date.parse(c.startedAt) > dayAgo);
   return [...merged, ...notYetListed];
+}
+
+/**
+ * The call in wrap-up, read when a sync merges. The call store imports this module, so it is loaded lazily, at
+ * sync time, rather than imported at the top (a circular import); null if it can't be loaded (e.g. in tests).
+ */
+function wrapUpCallId(): string | null {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { useCall } = require('@/telephony/callStore') as typeof import('@/telephony/callStore');
+    return useCall.getState().wrapUpCallId;
+  } catch {
+    return null;
+  }
 }
 
 const serverId = (id: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
@@ -134,6 +165,9 @@ export function callOutcomeLabel(outcome: CallRecord['outcome']) {
 
 /** Bumped by wipe(); a sync that started before a wipe must not write its results back */
 let generation = 0;
+/** The sync in progress, and the one asked for while it ran (started once it ends) */
+let running: Promise<boolean> | null = null;
+let followUp: Promise<boolean> | null = null;
 
 const empty = {
   contacts: [] as Contact[],
@@ -154,22 +188,20 @@ const SERVER_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 
 export const useData = create<DataState>()(
   persist(
-    (set, get) => ({
-      ...empty,
-      refreshing: false,
-      syncError: null,
-      sync: async () => {
-        if (get().refreshing) return false;
+    (set, get) => {
+      async function runSync(): Promise<boolean> {
         set({ refreshing: true });
         const gen = generation;
+        // The campaign this sync fetches the dispositions for; a switch meanwhile must not get them
+        const campaignId = get().dispositions.campaignId;
         try {
           await useOutbox.getState().flush();
           const since = get().lastSyncAt ?? undefined;
           const [contacts, calls, tasks, dispositions, server] = await Promise.all([
-            api.contacts.list(since, get().dispositions.campaignId || undefined),
+            api.contacts.list(since, campaignId || undefined),
             api.calls.list(),
             api.tasks.list(),
-            api.dispositions.config(get().dispositions.campaignId, findCampaign(get().dispositions.campaignId)?.wrapUpSeconds),
+            api.dispositions.config(campaignId, findCampaign(campaignId)?.wrapUpSeconds),
             api.config.get(),
           ]);
           // Signed out (and wiped) while this was in flight: drop the results instead of re-caching PII
@@ -178,17 +210,15 @@ export const useData = create<DataState>()(
           set((s) => ({
             // No list, or every lead called: the server's (empty) answer replaces what was cached, so the
             // Contacts tab can say so instead of showing another campaign's or already-called leads
-            contacts:
-              contacts.listStatus === 'assigned' ? mergeById(s.contacts, contacts.items, pending) : contacts.items,
+            contacts: contacts.listStatus === 'assigned' ? mergeById(s.contacts, contacts.items, pending) : contacts.items,
             contactsListStatus: contacts.listStatus,
             contactsListName: contacts.listName ?? null,
             contactsError: null,
-            calls: withServerCalls(s.calls, calls.items, pending).sort(
-              (a, b) => b.startedAt.localeCompare(a.startedAt),
-            ),
+            calls: withServerCalls(s.calls, calls.items, pending, wrapUpCallId()).sort((a, b) => b.startedAt.localeCompare(a.startedAt)),
             tasks: withServerTasks(s.tasks, tasks.items, pending),
             timeline: s.timeline.length ? s.timeline : api.timeline.seed(),
-            dispositions,
+            // Switched campaign while this ran: keep the new one (its own sync follows this one)
+            dispositions: s.dispositions.campaignId === campaignId ? dispositions : s.dispositions,
             server,
             // The server's own time, so clock skew on the device can't skip rows next time
             lastSyncAt: earliestCursor([contacts.cursor, calls.cursor, tasks.cursor]) ?? s.lastSyncAt ?? stamp(),
@@ -196,8 +226,11 @@ export const useData = create<DataState>()(
           }));
           return true;
         } catch (e) {
+          // Signed out meanwhile: the wiped store gets no error from the old login
+          if (gen !== generation) return false;
           const message =
-            e instanceof ApiError && e.code === 'offline'
+            // A timeout (reason TIMED_OUT) keeps its own message rather than "offline"
+            e instanceof ApiError && e.code === 'offline' && !e.reason
               ? 'You are offline'
               : e instanceof Error
                 ? e.message
@@ -206,116 +239,159 @@ export const useData = create<DataState>()(
           set({ syncError: message, contactsError: message });
           return false;
         } finally {
-          set({ refreshing: false });
+          // After a wipe (which already cleared it) a newer sync may own the flag
+          if (gen === generation) set({ refreshing: false });
         }
-      },
-      addCall: (call) => {
-        set((s) => ({
-          calls: [call, ...s.calls.filter((c) => c.id !== call.id)],
-          timeline: call.contactId
-            ? [
-                {
-                  id: `tl_${call.id}`,
-                  contactId: call.contactId,
-                  kind: 'call',
-                  at: call.startedAt,
-                  title: `${call.direction === 'inbound' ? 'Inbound' : 'Outbound'} call · ${callOutcomeLabel(call.outcome)}`,
-                  detail: '',
-                },
-                ...s.timeline.filter((t) => t.id !== `tl_${call.id}`),
-              ]
-            : s.timeline,
-        }));
-      },
-      saveDisposition: async (payload, extra) => {
-        const label = extra?.label ?? payload.code;
-        const call = get().calls.find((c) => c.id === payload.callId);
-        // Sent straight away, as the web's Submit, and the call only shows the disposition once the server has
-        // accepted it; a rejection reaches the wrap-up screen with the server's reason
-        await api.calls.disposition(payload);
-        set((s) => {
-          return {
-            calls: s.calls.map((c) =>
-              c.id === payload.callId ? { ...c, disposition: label, notes: payload.notes, updatedAt: stamp() } : c,
-            ),
-            contacts: call?.contactId
-              ? s.contacts.map((c) =>
-                  c.id === call.contactId ? { ...c, lastDisposition: label, lastContactAt: call.startedAt, updatedAt: stamp() } : c,
-                )
-              : s.contacts,
-            timeline: s.timeline.map((t) =>
-              t.id === `tl_${payload.callId}` ? { ...t, title: t.title.replace(/·.*$/, `· ${label}`), detail: payload.notes } : t,
-            ),
-          };
-        });
-      },
-      upsertTask: (task) => {
-        const row = { ...task, updatedAt: stamp() };
-        set((s) => {
-          const exists = s.tasks.some((t) => t.id === task.id);
-          return {
-            tasks: exists ? s.tasks.map((t) => (t.id === task.id ? row : t)) : [row, ...s.tasks],
-            timeline:
-              !exists && task.contactId
-                ? [
-                    {
-                      id: `tl_${task.id}`,
-                      contactId: task.contactId,
-                      kind: 'task',
-                      at: row.updatedAt,
-                      title: `Task created · ${task.title}`,
-                      detail: task.notes,
-                    },
-                    ...s.timeline,
-                  ]
-                : s.timeline,
-          };
-        });
-        useOutbox.getState().enqueue({ kind: 'task', label: `Task · ${task.title}`, payload: row });
-      },
-      completeTask: (id) => {
-        const t = get().tasks.find((x) => x.id === id);
-        if (t) get().upsertTask({ ...t, done: !t.done });
-      },
-      snoozeTask: (id, minutes) => {
-        const t = get().tasks.find((x) => x.id === id);
-        if (!t) return;
-        const base = Math.max(Date.now(), new Date(t.dueAt).getTime());
-        get().upsertTask({ ...t, dueAt: new Date(base + minutes * 60000).toISOString() });
-      },
-      updateContact: (id, patch) => {
-        const before = get().contacts.find((c) => c.id === id);
-        set((s) => ({
-          contacts: s.contacts.map((c) => (c.id === id ? { ...c, ...patch, updatedAt: stamp() } : c)),
-          timeline: before
-            ? [
-                {
-                  id: uid('tl'),
-                  contactId: id,
-                  kind: 'field',
-                  at: stamp(),
-                  title: 'Details updated',
-                  detail: describePatch(patch),
-                },
-                ...s.timeline,
-              ]
-            : s.timeline,
-        }));
-        useOutbox.getState().enqueue({ kind: 'contact', label: 'Contact edit', payload: { id, patch } });
-      },
-      setCampaign: (campaignId) => {
-        if (campaignId === get().dispositions.campaignId) return;
-        set((s) => ({ dispositions: { ...s.dispositions, campaignId } }));
-        void get().sync();
-      },
-      wipe: () => {
-        generation++;
-        set({ ...empty });
-      },
-    }),
+      }
+
+      return {
+        ...empty,
+        refreshing: false,
+        syncError: null,
+        sync: () => {
+          // Asked again while one is running (a login, then the campaign it picked): run once more right after it,
+          // so the later ask isn't lost; every ask meanwhile shares that one follow-up
+          if (followUp) return followUp;
+          if (running) {
+            followUp = running.then(() => {
+              followUp = null;
+              return get().sync();
+            });
+            return followUp;
+          }
+          running = runSync().finally(() => {
+            running = null;
+          });
+          return running;
+        },
+        addCall: (call) => {
+          set((s) => ({
+            calls: [call, ...s.calls.filter((c) => c.id !== call.id)],
+            timeline: call.contactId
+              ? [
+                  {
+                    id: `tl_${call.id}`,
+                    contactId: call.contactId,
+                    kind: 'call',
+                    at: call.startedAt,
+                    title: `${call.direction === 'inbound' ? 'Inbound' : 'Outbound'} call · ${callOutcomeLabel(call.outcome)}`,
+                    detail: '',
+                  },
+                  ...s.timeline.filter((t) => t.id !== `tl_${call.id}`),
+                ]
+              : s.timeline,
+          }));
+        },
+        saveDisposition: async (payload, extra) => {
+          const label = extra?.label ?? payload.code;
+          const call = get().calls.find((c) => c.id === payload.callId);
+          // Sent straight away, as the web's Submit, and the call only shows the disposition once the server has
+          // accepted it; a rejection reaches the wrap-up screen with the server's reason
+          await api.calls.disposition(payload);
+          set((s) => {
+            return {
+              calls: s.calls.map((c) =>
+                c.id === payload.callId ? { ...c, disposition: label, notes: payload.notes, updatedAt: stamp() } : c,
+              ),
+              contacts: call?.contactId
+                ? s.contacts.map((c) =>
+                    c.id === call.contactId ? { ...c, lastDisposition: label, lastContactAt: call.startedAt, updatedAt: stamp() } : c,
+                  )
+                : s.contacts,
+              timeline: s.timeline.map((t) =>
+                t.id === `tl_${payload.callId}` ? { ...t, title: t.title.replace(/·.*$/, `· ${label}`), detail: payload.notes } : t,
+              ),
+            };
+          });
+        },
+        upsertTask: (task, opts) => {
+          const row = { ...task, updatedAt: stamp() };
+          set((s) => {
+            const exists = s.tasks.some((t) => t.id === task.id);
+            return {
+              tasks: exists ? s.tasks.map((t) => (t.id === task.id ? row : t)) : [row, ...s.tasks],
+              timeline:
+                !exists && task.contactId
+                  ? [
+                      {
+                        id: `tl_${task.id}`,
+                        contactId: task.contactId,
+                        kind: 'task',
+                        at: row.updatedAt,
+                        title: `Task created · ${task.title}`,
+                        detail: task.notes,
+                      },
+                      ...s.timeline,
+                    ]
+                  : s.timeline,
+            };
+          });
+          const revertTo = opts?.revertTo;
+          useOutbox.getState().enqueue(
+            { kind: 'task', label: `Task · ${task.title}`, payload: row },
+            {
+              failureText: opts?.failureText,
+              // Turned down: put the task back as it was, unless it has been changed again since
+              onFail: revertTo
+                ? () =>
+                    set((s) => ({
+                      tasks: s.tasks.map((t) => (t.id === row.id && t.updatedAt === row.updatedAt ? revertTo : t)),
+                    }))
+                : undefined,
+            },
+          );
+        },
+        completeTask: (id) => {
+          const t = get().tasks.find((x) => x.id === id);
+          if (t)
+            get().upsertTask(
+              { ...t, done: !t.done },
+              { revertTo: t, failureText: t.done ? "Couldn't reopen the callback. Please try again." : undefined },
+            );
+        },
+        snoozeTask: (id, minutes) => {
+          const t = get().tasks.find((x) => x.id === id);
+          if (!t) return;
+          const base = Math.max(Date.now(), new Date(t.dueAt).getTime());
+          get().upsertTask({ ...t, dueAt: new Date(base + minutes * 60000).toISOString() }, { revertTo: t });
+        },
+        updateContact: (id, patch) => {
+          const before = get().contacts.find((c) => c.id === id);
+          set((s) => ({
+            contacts: s.contacts.map((c) => (c.id === id ? { ...c, ...patch, updatedAt: stamp() } : c)),
+            timeline: before
+              ? [
+                  {
+                    id: uid('tl'),
+                    contactId: id,
+                    kind: 'field',
+                    at: stamp(),
+                    title: 'Details updated',
+                    detail: describePatch(patch),
+                  },
+                  ...s.timeline,
+                ]
+              : s.timeline,
+          }));
+          useOutbox.getState().enqueue({ kind: 'contact', label: 'Contact edit', payload: { id, patch } });
+        },
+        setCampaign: (campaignId) => {
+          if (campaignId === get().dispositions.campaignId) return;
+          set((s) => ({ dispositions: { ...s.dispositions, campaignId } }));
+          void get().sync();
+        },
+        wipe: () => {
+          generation++;
+          set({ ...empty, refreshing: false, syncError: null });
+        },
+      };
+    },
     {
       name: 'claritel.data',
       storage,
+      // The calls keep their real `number` (call back from history, a wrap-up resumed after a restart) and
+      // `recordingUrl` (the player has no other way to get it) so both work before the next sync. The cache is
+      // kept out of device backups instead (android.allowBackup: false in app.json).
       partialize: ({ refreshing, syncError, contactsError, sync, ...rest }) => rest,
       // v1: older builds saved the sample break types and dispositions before the server's had loaded;
       // against the backend those are dropped, so a sample break id can never be sent to the server.

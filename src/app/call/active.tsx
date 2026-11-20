@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { ActivityIndicator, Pressable, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, BackHandler, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { CallMeta } from '@/components/call/CallMeta';
@@ -18,6 +18,7 @@ import { useNow } from '@/hooks/useNow';
 import type { AudioRoute } from '@/store/settings';
 import { useCall } from '@/telephony/callStore';
 import { font, useTheme } from '@/theme';
+import { Tappable } from '@/components/motion/Tappable';
 
 function Control({
   icon,
@@ -26,9 +27,12 @@ function Control({
   onPress,
   disabled,
   size = 68,
+  a11yLabel,
 }: {
   icon: IconName;
   label: string;
+  /** What a screen reader says, when the short caption isn't enough on its own */
+  a11yLabel?: string;
   active?: boolean;
   onPress: () => void;
   disabled?: boolean;
@@ -40,7 +44,7 @@ function Control({
     <View style={{ alignItems: 'center', gap: 6, width: size + 8 }}>
       <PressableScale
         accessibilityRole="button"
-        accessibilityLabel={label}
+        accessibilityLabel={a11yLabel ?? label}
         accessibilityState={{ selected: !!active, disabled: !!disabled }}
         disabled={disabled}
         scaleTo={0.92}
@@ -57,10 +61,11 @@ function Control({
           backgroundColor: active ? c.callControlActive : c.callControl,
           // A visible edge so the circle reads against the call screen, not by fill alone
           borderWidth: 1.5,
-          borderColor: c.line,
+          borderColor: active ? c.callControlActive : c.callControlBorder,
           opacity: disabled ? 0.4 : 1,
         }}
-        pressedStyle={{ opacity: 0.8 }}
+        // A fill change, not a fade: fading reads as disabled
+        pressedStyle={{ backgroundColor: active ? c.callControlActive : c.callControlPressed }}
       >
         {/* Keyed so a mic/mic-off or pause/play swap cross-fades */}
         <Animated.View key={icon} entering={FadeIn.duration(duration.fast)}>
@@ -90,6 +95,33 @@ export default function ActiveCall() {
   const hasDetails = useDetails((s) => !!(call && s.byCall[call.id]?.fields.length));
   const consult = useCall((s) => s.consult);
   const conference = useCall((s) => s.conference);
+  const overlayOpen = consult ? minimisedAt !== consult.startedAt : !!flow;
+  // The agent pressed End: that press gives its own cue
+  const endPressed = useRef(false);
+
+  // A call the other side ended before it connected (no answer, busy) gets the end cue too, as it goes to wrap-up;
+  // a connected call's end cue comes from useCallFeedback
+  useEffect(
+    () =>
+      useCall.subscribe((s, prev) => {
+        if (prev.call && !s.call && !prev.call.connectedAt && !endPressed.current && s.wrapUpCallId === prev.call.id) {
+          feedback('call.ended');
+        }
+      }),
+    [],
+  );
+
+  // Android Back closes what's open over the call (transfer / conference, the keypad); otherwise it does nothing:
+  // popping this screen would only have the call routing push it straight back, losing its state
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (consult && overlayOpen) setMinimisedAt(consult.startedAt);
+      else if (flow) setFlow(null);
+      else if (panel !== 'none') setPanel('none');
+      return true;
+    });
+    return () => sub.remove();
+  }, [consult, overlayOpen, flow, panel]);
 
   if (!call) return <View style={{ flex: 1, backgroundColor: c.callScreen }} />;
   const who = party(call);
@@ -109,33 +141,12 @@ export default function ActiveCall() {
 
   return (
     <View style={{ flex: 1, backgroundColor: c.callScreen, paddingTop: insets.top + 12, paddingBottom: insets.bottom + 20 }}>
-      <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 8, flexWrap: 'wrap', paddingHorizontal: 16 }}>
-        {live && (
-          <View
-            style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 5,
-              paddingHorizontal: 10,
-              height: 26,
-              borderRadius: 13,
-              backgroundColor: c.callControl,
-            }}
-          >
-            <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: c.signalDown }} />
-            <T v="caption" color={c.onCallScreen} style={{ fontFamily: font.semibold }}>
-              Recording
-            </T>
-          </View>
-        )}
-      </View>
-
       {/* Everything above the call controls. The details panel opens over this area only, never the controls. */}
       <View style={{ flex: 1 }} onLayout={(e) => setTopH(e.nativeEvent.layout.height)}>
         {showDetails && <View style={{ height: DETAILS_BAR_H + 12 }} />}
 
         {consult && minimisedAt === consult.startedAt && (
-          <Pressable
+          <Tappable
             accessibilityRole="button"
             accessibilityLabel={`Return to ${consult.target.name}`}
             onPress={() => setMinimisedAt(null)}
@@ -157,7 +168,7 @@ export default function ActiveCall() {
             <T v="label" color={c.onCallControlActive}>
               Return
             </T>
-          </Pressable>
+          </Tappable>
         )}
 
         {conference ? (
@@ -234,8 +245,10 @@ export default function ActiveCall() {
                   alignItems: 'center',
                   justifyContent: 'center',
                   backgroundColor: c.callControl,
+                  borderWidth: 1.5,
+                  borderColor: c.callControlBorder,
                 }}
-                pressedStyle={{ backgroundColor: c.callControlActive }}
+                pressedStyle={{ backgroundColor: c.callControlActive, borderColor: c.callControlActive }}
               >
                 {({ pressed }) => (
                   <T v="display" style={{ fontFamily: font.regular }} color={pressed ? c.onCallControlActive : c.onCallScreen}>
@@ -302,6 +315,9 @@ export default function ActiveCall() {
                     ? 'Resume'
                     : 'Hold'
             }
+            a11yLabel={
+              call.holdFailed && !call.holdPending ? `${call.state === 'held' ? 'Resume' : 'Hold'} failed, tap to retry` : undefined
+            }
             active={call.state === 'held'}
             onPress={toggleHold}
             disabled={!live || !!consult || !!call.holdPending}
@@ -319,6 +335,7 @@ export default function ActiveCall() {
           disabled={!!call.dialPending}
           onPress={() => {
             // A connected call's end is signalled by useCallFeedback when the call clears; one that never connected, here
+            endPressed.current = true;
             if (!call.connectedAt) feedback('call.ended');
             end();
           }}
@@ -342,7 +359,7 @@ export default function ActiveCall() {
         </PressableScale>
       </View>
 
-      {((consult && minimisedAt !== consult.startedAt) || (!consult && flow)) && (
+      {overlayOpen && (
         <Animated.View
           entering={FadeIn.duration(duration.base)}
           style={{
@@ -372,35 +389,38 @@ export default function ActiveCall() {
             ['speaker', 'Speaker', 'volume-up'],
             ['bluetooth', 'Bluetooth headset', 'bluetooth-audio'],
           ] as [AudioRoute, string, IconName][]
-        ).map(([r, label, icon]) => (
-          <Pressable
-            key={r}
-            accessibilityRole="radio"
-            accessibilityState={{ checked: call.route === r }}
-            onPress={() => {
-              tap();
-              setRoute(r);
-              setPanel('none');
-            }}
-            style={{
-              minHeight: 56,
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 14,
-              paddingHorizontal: 14,
-              borderRadius: 12,
-              borderWidth: 1,
-              borderColor: call.route === r ? c.purple : c.line,
-              backgroundColor: call.route === r ? c.selected : c.surface,
-            }}
-          >
-            <Icon name={icon} color={c.ink2} />
-            <T v="bodyStrong" style={{ flex: 1 }}>
-              {label}
-            </T>
-            {call.route === r && <Icon name="check" color={c.purple} />}
-          </Pressable>
-        ))}
+        )
+          // Only the routes there is a device for, where the system lists them (no headset, no Bluetooth row)
+          .filter(([r]) => !call.routes || call.routes.includes(r) || call.route === r)
+          .map(([r, label, icon]) => (
+            <Tappable
+              key={r}
+              accessibilityRole="radio"
+              accessibilityState={{ checked: call.route === r }}
+              onPress={() => {
+                tap();
+                setRoute(r);
+                setPanel('none');
+              }}
+              style={{
+                minHeight: 56,
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 14,
+                paddingHorizontal: 14,
+                borderRadius: 12,
+                borderWidth: 1,
+                borderColor: call.route === r ? c.purple : c.controlBorder,
+                backgroundColor: call.route === r ? c.selected : c.surface,
+              }}
+            >
+              <Icon name={icon} color={c.ink2} />
+              <T v="bodyStrong" style={{ flex: 1 }}>
+                {label}
+              </T>
+              {call.route === r && <Icon name="check" color={c.purple} />}
+            </Tappable>
+          ))}
       </Sheet>
     </View>
   );

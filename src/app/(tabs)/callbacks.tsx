@@ -91,7 +91,7 @@ export default function Callbacks() {
         )}
         ItemSeparatorComponent={() => <Divider inset={68} />}
         renderItem={({ item }) => (
-          <FadeInItem>
+          <FadeInItem enter={false}>
             <TaskRow
               task={item}
               onCall={() => callTask(item)}

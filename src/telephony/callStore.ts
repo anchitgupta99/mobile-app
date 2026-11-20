@@ -11,7 +11,7 @@ import { findCampaign } from '@/store/campaigns';
 import type { CallAdapter } from './adapter';
 import { voipAdapter } from './voip';
 import { nativeCall } from './nativeCall';
-import { setCallAudioRoute, startCallAudio, stopCallAudio } from './sip/audioRoute';
+import { setCallAudioRoute, startCallAudio, stopCallAudio, watchAudioDevices } from './sip/audioRoute';
 import { setSipCallHandlers, type IncomingSipCall } from './sip/sipPhone';
 import type { InboundEnded, InboundRing } from '@/api/socket';
 import { MASK_CHAR, maskPhoneForDisplay, maskPhoneFully, type PhoneMaskRule } from '@/domain/phoneMask';
@@ -45,7 +45,10 @@ export type ActiveCall = {
   holdFailed?: boolean;
   /** Backend: Accept on an accept/reject inbound call is with the server; it keeps ringing until it's accepted */
   accepting?: boolean;
+  /** The route the system reports the call's audio is on (the agent's pick until it says) */
   route: AudioRoute;
+  /** Android: the routes there is a device for, as the system lists them; unset where it doesn't say (all offered) */
+  routes?: AudioRoute[];
   dtmf: string;
   error: string | null;
   /** Telephony call UUID, shown on the call screen and kept on the call record */
@@ -467,10 +470,8 @@ export const useCall = create<CallStore>((set, get) => {
     if (!c) return;
     const startedAt = Date.now();
     set({
-      consult: { kind, target: { ...target, muted: false }, state: 'calling', startedAt, answeredAt: null, heldBefore: false, error: null },
+      consult: { kind, target: { ...target, muted: false }, state: 'calling', startedAt, answeredAt: null, heldBefore: c.state === 'held', error: null },
     });
-    // Read by recordCall when the server's hang-up ends the call
-    if (kind === 'transfer') transferredTo = target.name;
     const body = {
       callUuid: c.uuid,
       phoneNumber: target.dial ?? '',
@@ -481,6 +482,16 @@ export const useCall = create<CallStore>((set, get) => {
     try {
       if (kind === 'transfer') await api.liveCalls.transfer(body);
       else await api.liveCalls.conference(body);
+      // Only once the transfer went through. Read by recordCall when the server's hang-up ends the call; if that
+      // hang-up came first, the call's record (and so the wrap-up's note) gets it now
+      if (kind === 'transfer') {
+        if (get().call?.id === c.id) transferredTo = target.name;
+        else {
+          useData.setState((s) => ({
+            calls: s.calls.map((r) => (r.id === c.id && !r.notes ? { ...r, notes: `Transferred to ${target.name}.` } : r)),
+          }));
+        }
+      }
       if (get().consult?.startedAt === startedAt) set({ consult: null });
       // The web's success toasts
       notify(kind === 'transfer' ? 'Call handed over successfully' : 'Conference connected successfully', 'success', undefined, {
@@ -491,7 +502,6 @@ export const useCall = create<CallStore>((set, get) => {
         watchConference(c.id, c.uuid);
       }
     } catch (e) {
-      if (kind === 'transfer') transferredTo = null;
       const x = get().consult;
       if (!x || x.startedAt !== startedAt) return;
       // The web's texts: an answer of { success:false } shows its message or "Target did not answer or was busy";
@@ -585,7 +595,7 @@ export const useCall = create<CallStore>((set, get) => {
       set({ conference: { ...conf, legs } });
     },
 
-    startOutbound: async ({ number, source, taskId = null, dialMode = 'Manual', callback = false }) => {
+    startOutbound: async ({ number, contactId = null, source, taskId = null, dialMode = 'Manual', callback = false }) => {
       if (get().call) return { ok: false, title: 'Already on a call', message: 'End the current call first.' };
       const wrap = get().wrapUpCallId;
       if (wrap) {
@@ -605,7 +615,7 @@ export const useCall = create<CallStore>((set, get) => {
           state: 'dialing',
           dialPending: true,
           number,
-          contactId: null,
+          contactId,
           pop: buildPop(number),
           source,
           taskId,
@@ -626,7 +636,7 @@ export const useCall = create<CallStore>((set, get) => {
 
       let dialed: Awaited<ReturnType<CallAdapter['dial']>>;
       try {
-        dialed = await voipAdapter.dial({ number, contactId: null, callback });
+        dialed = await voipAdapter.dial({ number, contactId, callback });
         if (get().call?.id === id) patch({ dialPending: false });
       } catch (e) {
         const cur = get().call;
@@ -658,6 +668,9 @@ export const useCall = create<CallStore>((set, get) => {
           campaignId: dialed.campaignId ?? current.campaignId,
           ...(current.state === 'dialing' && { state: 'ringing' as const }),
         });
+        // The details panel saves to this lead and call (its context may have come before the lead was known)
+        const ids = get().call;
+        if (ids) useDetails.getState().setIds(id, { leadId: ids.leadId, callUuid: ids.uuid });
         // An auto-dial group resolves to one of its campaigns: its own rules and lead
         loadContext(id);
         connectWhenAnswered(id);
@@ -682,8 +695,10 @@ export const useCall = create<CallStore>((set, get) => {
       }
       if (get().call?.id !== c.id) return;
       clearTimers();
-      patch({ accepting: false, state: 'dialing' });
-      connectWhenAnswered(c.id);
+      // The webphone already answered and the server has put the customer through: the call is live, so the screen
+      // shows its timer, the ring stops, and ending it goes to wrap-up like any answered call
+      patch({ accepting: false });
+      connect(c.id);
     },
 
     decline: () => {
@@ -698,6 +713,9 @@ export const useCall = create<CallStore>((set, get) => {
       set({ call: null });
       // The server hangs up the agent's leg and offers the customer to the next agent
       void api.liveCalls.rejectInbound(c.uuid, c.agentCallUuid ?? null).catch(() => undefined);
+      // And the webphone's own session, as end() does, so a failed reject doesn't leave it up (every later INVITE
+      // would be turned away as "already on a call"). After clearing, so its "ended" finds nothing to end.
+      void voipAdapter.end(c.id);
     },
 
     toggleMute: () => {
@@ -727,7 +745,15 @@ export const useCall = create<CallStore>((set, get) => {
       );
     },
 
-    setRoute: (route) => patch({ route }),
+    setRoute: (route) => {
+      const c = get().call;
+      if (!c) return;
+      // The button shows the route the system reports, not the one asked for: with no headset there the audio
+      // stays where it was. Where the system can't say (no native audio module), the pick stands.
+      void setCallAudioRoute(route).then((actual) => {
+        if (get().call?.id === c.id) patch({ route: actual ?? route });
+      });
+    },
 
     sendDigit: (d) => {
       const c = get().call;
@@ -817,6 +843,9 @@ export const useCall = create<CallStore>((set, get) => {
     },
 
     takeSipCall: (info) => {
+      // A supervisor listening in, whispering or barging in: answered with no call screen, as on the web, also
+      // during the agent's call (the webphone keeps it apart from the call)
+      if (info.intervention) return true;
       const c = get().call;
       // The call the agent just dialed from here: the server's INVITE carries its customer's number
       if (c) {
@@ -829,10 +858,10 @@ export const useCall = create<CallStore>((set, get) => {
           leadId: c.leadId ?? info.leadId,
           campaignId: c.campaignId ?? info.campaignId ?? undefined,
         });
+        const ids = get().call;
+        if (ids) useDetails.getState().setIds(c.id, { leadId: ids.leadId, callUuid: ids.uuid });
         return true;
       }
-      // A supervisor listening in, whispering or barging in: answered with no call screen, as on the web
-      if (info.intervention) return true;
       // Anything else needs a customer, and a pending disposition comes first
       if (!info.customerNumber || get().wrapUpCallId) return false;
       startServerCall(info);
@@ -874,15 +903,31 @@ const offSession = useSession.subscribe((s, prev) => {
   if (prev.token && !s.token) useCall.getState().reset();
 });
 // The webphone's audio follows the call: call mode (earpiece, proximity sensor) from the moment there is
-// a call, the route the agent picks on the call screen, and normal audio again once it's gone
+// a call, and normal audio again once it's gone. The call shows the route and devices the system reports
+// (the agent's own picks go through setRoute).
+let offDevices: (() => void) | null = null;
 const offAudio = useCall.subscribe((s, prev) => {
-  if (s.call && !prev.call) startCallAudio(s.call.route);
-  else if (!s.call && prev.call) stopCallAudio();
-  else if (s.call && prev.call && s.call.route !== prev.call.route) setCallAudioRoute(s.call.route);
+  if (s.call && !prev.call) {
+    const id = s.call.id;
+    const onCall = (p: Partial<ActiveCall>) => {
+      const c = useCall.getState().call;
+      if (c?.id === id) useCall.setState({ call: { ...c, ...p } });
+    };
+    offDevices?.();
+    offDevices = watchAudioDevices(({ available, selected }) =>
+      onCall({ ...(available.length > 0 && { routes: available }), ...(selected && { route: selected }) }),
+    );
+    void startCallAudio(s.call.route).then((route) => route && onCall({ route }));
+  } else if (!s.call && prev.call) {
+    offDevices?.();
+    offDevices = null;
+    stopCallAudio();
+  }
 });
 registry.__claritelCallStoreUnsubscribe = () => {
   offSession();
   offAudio();
+  offDevices?.();
 };
 
 // Every call the server puts through to the webphone goes through takeSipCall: the agent's own manual
@@ -890,4 +935,5 @@ registry.__claritelCallStoreUnsubscribe = () => {
 setSipCallHandlers({
   accept: (info) => useCall.getState().takeSipCall(info),
   ended: () => useCall.getState().remoteEnded(),
+  busy: () => !!useCall.getState().call,
 });

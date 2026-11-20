@@ -32,7 +32,7 @@ export default function Notifications() {
         contentContainerStyle={{ paddingVertical: 8, paddingBottom: insets.bottom + 32, flexGrow: 1 }}
         ItemSeparatorComponent={() => <Divider inset={68} />}
         renderItem={({ item }) => (
-          <FadeInItem>
+          <FadeInItem enter={false}>
             <TaskRow
               task={item}
               onCall={() => callTask(item)}

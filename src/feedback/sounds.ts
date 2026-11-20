@@ -32,17 +32,32 @@ function warnOnce(e: unknown) {
   }
 }
 
-/** Call once after startup. Safe to call again; failures never throw. */
-export async function preloadSounds() {
-  if (started) return;
-  started = true;
+/**
+ * The app-wide mode for UI sounds: respect the silent switch and never take audio focus from call audio.
+ * When the real VoIP stack lands, re-check this against its audio session.
+ */
+export async function restoreUiAudioMode() {
   try {
-    // Respect the silent switch and never take audio focus from call audio.
-    // When the real VoIP stack lands, re-check this against its audio session.
     await setAudioModeAsync({ playsInSilentMode: false, interruptionMode: 'mixWithOthers' });
   } catch (e) {
     warnOnce(e);
   }
+}
+
+/** For recordings the agent chose to play: audible with the silent switch on, and other audio pauses */
+export async function setPlaybackAudioMode() {
+  try {
+    await setAudioModeAsync({ playsInSilentMode: true, interruptionMode: 'doNotMix', shouldPlayInBackground: false });
+  } catch (e) {
+    warnOnce(e);
+  }
+}
+
+/** Call once after startup. Safe to call again; failures never throw. */
+export async function preloadSounds() {
+  if (started) return;
+  started = true;
+  await restoreUiAudioMode();
   for (const [name, src] of Object.entries(sources) as [SoundName, number][]) {
     try {
       players.set(name, createAudioPlayer(src));

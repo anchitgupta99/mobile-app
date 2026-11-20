@@ -80,6 +80,10 @@ export function connectAgentSocket(token: string, handlers: SocketHandlers) {
   s.on('disconnect', (reason) => {
     log('disconnected', reason);
     stopHeartbeat();
+    // socket.io doesn't reconnect by itself after the server drops the connection, and without a heartbeat the
+    // server pauses the agent after 30 s and logs them out after 3 min. Our own disconnectAgentSocket removes this
+    // listener first (and reads as 'io client disconnect'), and a forced logout comes as agent_disconnected.
+    if (reason === 'io server disconnect' && socket === s) s.connect();
   });
   s.on('socket_ready', (data) => log('ready', data));
   s.on('agent_disconnected', (data: { message?: string; reason?: string }) => {

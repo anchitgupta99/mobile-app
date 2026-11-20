@@ -65,14 +65,16 @@ export function maskPhoneFully(value: string): string {
 export function maskPhoneForDisplay(value: string, rule: PhoneMaskRule | null | undefined): string {
   if (!rule || !value) return value;
   const str = normalizePhone(String(value));
-  const count = Math.max(0, Number(rule.unmask_count ?? 0));
+  const n = Number(rule.unmask_count ?? 0);
+  // A non-numeric count would be NaN, and slice(-0) returns the whole string: both mean "show nothing"
+  const count = Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
   switch (rule.mask_type) {
     case 'start':
       if (str.length <= count) return str;
       return str.slice(0, count) + MASK_CHAR.repeat(str.length - count);
     case 'end':
       if (str.length <= count) return str;
-      return MASK_CHAR.repeat(str.length - count) + str.slice(-count);
+      return MASK_CHAR.repeat(str.length - count) + (count > 0 ? str.slice(-count) : '');
     case 'all':
     default:
       return MASK_CHAR.repeat(str.length);

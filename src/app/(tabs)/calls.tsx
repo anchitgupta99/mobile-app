@@ -1,12 +1,14 @@
 import { useMemo, useState } from 'react';
-import { Pressable, RefreshControl, ScrollView, SectionList, View } from 'react-native';
+import { RefreshControl, ScrollView, SectionList, View } from 'react-native';
 import Animated, { FadeIn, LinearTransition } from 'react-native-reanimated';
 import { CallCard, campaignName, LeadSheet } from '@/components/CallCard';
 import { notify } from '@/components/feedback';
 import { FadeInItem } from '@/components/motion/FadeInItem';
 import { RecordingPlayer } from '@/components/RecordingPlayer';
-import { Sheet } from '@/components/Sheet';
+import { contactMapOf } from '@/components/contactMap';
+import { Sheet, useLastWhileOpen } from '@/components/Sheet';
 import { Button, CountBadge, EmptyState, Field, Icon, IconButton, Pill, T, tap } from '@/components/ui';
+import { findPath } from '@/domain/dispositions';
 import { formatDay, startOfDay } from '@/domain/format';
 import type { CallRecord } from '@/domain/types';
 import { useRefresh } from '@/hooks/useRefresh';
@@ -16,6 +18,7 @@ import { useCampaigns } from '@/store/campaigns';
 import { useData } from '@/store/data';
 import { font, useTheme } from '@/theme';
 import { duration } from '@/theme/motion';
+import { Tappable } from '@/components/motion/Tappable';
 
 type CallType = 'all' | 'inbound' | 'outbound' | 'missed';
 type Filters = { type: CallType; by: 'any' | 'customer' | 'agent'; minMins: number; campaign: string; disposition: string };
@@ -160,7 +163,7 @@ function MoreFilters({
                 alignItems: 'center',
                 gap: 4,
                 borderWidth: 1,
-                borderColor: draft.minMins ? c.purple : c.line,
+                borderColor: draft.minMins ? c.purple : c.controlBorder,
                 borderRadius: 10,
                 paddingHorizontal: 4,
               }}
@@ -206,6 +209,7 @@ export default function Calls() {
   const { c } = useTheme();
   const calls = useData((s) => s.calls);
   const contacts = useData((s) => s.contacts);
+  const dispositionTree = useData((s) => s.dispositions.dispositions);
   const { refreshing, onRefresh } = useRefresh();
   const dial = useDial();
   const dialBlock = useDialAvailability('history');
@@ -216,18 +220,23 @@ export default function Calls() {
   const [rangeOpen, setRangeOpen] = useState(false);
   const [lead, setLead] = useState<CallRecord | null>(null);
   const [playing, setPlaying] = useState<CallRecord | null>(null);
+  // Kept while the recording sheet animates closed, so it doesn't slide down empty
+  const shownRecording = useLastWhileOpen(playing, !!playing);
   const chips = activeChips(filters);
 
   const sections = useMemo(() => {
     // As the web's history search: the typed text, any case, in the customer's name, the number as shown on the
     // row (masked when the campaign masks it) or the disposition
     const term = q.trim().toLowerCase();
+    const byId = contactMapOf(contacts);
     const matches = (x: CallRecord) => {
-      const name = (contacts.find((ct) => ct.id === x.contactId)?.name || x.customerName || '').toLowerCase();
+      const name = ((x.contactId ? byId.get(x.contactId)?.name : undefined) || x.customerName || '').toLowerCase();
       const phone = x.displayNumber ?? x.number;
       const dispo = (x.disposition ?? '').toLowerCase();
       return name.includes(term) || phone.includes(term) || dispo.includes(term);
     };
+    // The filter lists top-level outcomes; match the call's outcome exactly, so "Call" doesn't also match "Callback…"
+    const topDisposition = (saved: string | null) => findPath(dispositionTree, saved)?.[0]?.label ?? (saved ?? '').split(' › ')[0];
     const groups = new Map<string, CallRecord[]>();
     calls
       .filter((x) => inDate(x, date))
@@ -236,14 +245,14 @@ export default function Calls() {
       .filter((x) => filters.by === 'any' || (x.disconnectedBy ?? 'customer') === filters.by)
       .filter((x) => !filters.minMins || x.durationSec > filters.minMins * 60)
       .filter((x) => filters.campaign === 'all' || x.campaignId === filters.campaign)
-      .filter((x) => filters.disposition === 'all' || (x.disposition ?? '').startsWith(filters.disposition))
+      .filter((x) => filters.disposition === 'all' || topDisposition(x.disposition) === filters.disposition)
       .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
       .forEach((x) => {
         const k = formatDay(x.startedAt);
         groups.set(k, [...(groups.get(k) ?? []), x]);
       });
     return [...groups.entries()].map(([title, data]) => ({ title, data }));
-  }, [calls, contacts, q, date, filters]);
+  }, [calls, contacts, dispositionTree, q, date, filters]);
 
   const count = sections.reduce((t, s) => t + s.data.length, 0);
 
@@ -264,7 +273,7 @@ export default function Calls() {
               right={q ? <IconButton icon="close" label="Clear search" variant="plain" size={36} onPress={() => setQ('')} /> : undefined}
             />
           </View>
-          <Pressable
+          <Tappable
             accessibilityRole="button"
             accessibilityLabel={`More filters${chips.length ? `, ${chips.length} active` : ''}`}
             onPress={() => {
@@ -276,7 +285,7 @@ export default function Calls() {
               height: 52,
               borderRadius: 8,
               borderWidth: 1,
-              borderColor: chips.length ? c.purple : c.line,
+              borderColor: chips.length ? c.purple : c.controlBorder,
               backgroundColor: pressed ? c.pressed : chips.length ? c.selected : c.surface,
               alignItems: 'center',
               justifyContent: 'center',
@@ -288,7 +297,7 @@ export default function Calls() {
                 <CountBadge n={chips.length} />
               </View>
             )}
-          </Pressable>
+          </Tappable>
         </View>
         {/* The padding keeps the Pills' hitSlop inside the ScrollView (Android drops touches outside a parent); the
             negative margin keeps the visual spacing unchanged */}
@@ -317,7 +326,7 @@ export default function Calls() {
               contentContainerStyle={{ gap: 8, paddingHorizontal: 16, paddingVertical: 4, alignItems: 'center' }}
             >
               {chips.map((ch) => (
-                <Pressable
+                <Tappable
                   key={ch.key}
                   accessibilityRole="button"
                   accessibilityLabel={`Remove filter ${ch.label}`}
@@ -343,9 +352,9 @@ export default function Calls() {
                     {ch.label}
                   </T>
                   <Icon name="close" size={16} color={c.accentInk} />
-                </Pressable>
+                </Tappable>
               ))}
-              <Pressable
+              <Tappable
                 accessibilityRole="button"
                 onPress={() => {
                   tap();
@@ -363,7 +372,7 @@ export default function Calls() {
                 <T v="label" color={c.purple}>
                   Clear all
                 </T>
-              </Pressable>
+              </Tappable>
             </ScrollView>
           </Animated.View>
         )}
@@ -386,7 +395,7 @@ export default function Calls() {
         )}
         ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
         renderItem={({ item }) => (
-          <FadeInItem>
+          <FadeInItem enter={false}>
             <CallCard
               call={item}
               callDimmed={!!dialBlock}
@@ -428,7 +437,7 @@ export default function Calls() {
         {ranges.map((r) => {
           const on = date.kind === 'range' && date.label === r.label;
           return (
-            <Pressable
+            <Tappable
               key={r.label}
               accessibilityRole="radio"
               accessibilityState={{ checked: on }}
@@ -445,7 +454,7 @@ export default function Calls() {
                 paddingHorizontal: 14,
                 borderRadius: 12,
                 borderWidth: 1,
-                borderColor: on ? c.purple : c.line,
+                borderColor: on ? c.purple : c.controlBorder,
                 backgroundColor: on ? c.selected : c.surface,
               }}
             >
@@ -456,7 +465,7 @@ export default function Calls() {
                 </T>
               </View>
               {on && <Icon name="check" color={c.purple} />}
-            </Pressable>
+            </Tappable>
           );
         })}
       </Sheet>
@@ -464,7 +473,7 @@ export default function Calls() {
       <LeadSheet call={lead} onClose={() => setLead(null)} />
 
       <Sheet open={!!playing} onClose={() => setPlaying(null)} title="Recording" scroll={false}>
-        {playing && <RecordingPlayer call={playing} />}
+        {shownRecording && <RecordingPlayer call={shownRecording} />}
       </Sheet>
     </View>
   );

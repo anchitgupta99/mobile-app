@@ -1,6 +1,6 @@
 import { api } from '@/api/client';
 import type { Task } from '@/domain/types';
-import { useOutbox } from '../outbox';
+import { pendingIds, useOutbox } from '../outbox';
 
 jest.mock('@/api/client', () => ({
   api: {
@@ -48,9 +48,36 @@ describe('a change', () => {
     expect(useOutbox.getState().failure?.message).toBe('Failed to reschedule. Please try again.');
   });
 
-  it('shows nothing when marking a callback done fails, as the web has no such message', async () => {
-    useOutbox.getState().enqueue({ kind: 'task', label: 'Callback', payload: callback({ done: true }) });
+  it('shows an error and calls onFail when marking a callback done fails', async () => {
+    const onFail = jest.fn();
+    useOutbox.getState().enqueue({ kind: 'task', label: 'Callback', payload: callback({ done: true }) }, { onFail });
     await settle();
-    expect(useOutbox.getState().failure).toBeNull();
+    expect(onFail).toHaveBeenCalledTimes(1);
+    expect(useOutbox.getState().failure?.message).toBe("Couldn't mark the callback done. Please try again.");
+  });
+
+  it('counts a change being sent as pending, until it settles', async () => {
+    useOutbox.getState().enqueue({ kind: 'task', label: 'Callback', payload: callback() });
+    expect(pendingIds([]).has(callback().id)).toBe(true);
+    await settle();
+    expect(pendingIds([]).has(callback().id)).toBe(false);
+  });
+
+  it('sends status changes one at a time, in order', async () => {
+    const order: string[] = [];
+    let release!: () => void;
+    (api.agents.setStatus as jest.Mock)
+      .mockImplementationOnce((s: string) => {
+        order.push(`start ${s}`);
+        return new Promise<void>((r) => (release = () => (order.push(`end ${s}`), r())));
+      })
+      .mockImplementationOnce((s: string) => (order.push(`start ${s}`), Promise.resolve({})));
+    useOutbox.getState().enqueue({ kind: 'status', label: 'Status', payload: { status: 'break', breakCode: 'b' } });
+    useOutbox.getState().enqueue({ kind: 'status', label: 'Status', payload: { status: 'available', breakCode: null } });
+    await settle();
+    expect(order).toEqual(['start break']);
+    release();
+    await settle();
+    expect(order).toEqual(['start break', 'end break', 'start available']);
   });
 });

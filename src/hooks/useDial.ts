@@ -1,4 +1,5 @@
 import { router } from 'expo-router';
+import { useRef } from 'react';
 import { useAppMenu } from '@/components/AppMenu';
 import { alertDialog, notify } from '@/components/feedback';
 import { tap } from '@/components/ui';
@@ -111,7 +112,10 @@ export function showDialBlock(block: DialBlock) {
  */
 export function useDial() {
   const start = useCall((s) => s.startOutbound);
+  // A second tap while the first dial is starting is dropped, rather than read as "Already on a call"
+  const busy = useRef(false);
   return async (input: { number: string; contactId?: string | null; source: DialSource; taskId?: string | null }) => {
+    if (busy.current) return false;
     if (!input.number || input.number.replace(/\D/g, '').length < 3) return false;
     const block = checkDial(input.source);
     if (block) {
@@ -119,7 +123,14 @@ export function useDial() {
       return false;
     }
     tap('medium');
-    const res = await start(input);
+    busy.current = true;
+    let res: Awaited<ReturnType<typeof start>>;
+    try {
+      // A callback task goes in as the server's CALLBACK, which a campaign with manual dialing off still allows
+      res = await start({ ...input, callback: input.source === 'task' });
+    } finally {
+      busy.current = false;
+    }
     if (!res.ok && res.toast) {
       notify(res.message, 'error', undefined, { title: res.title });
       return false;

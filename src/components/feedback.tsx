@@ -1,13 +1,25 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AccessibilityInfo, ActivityIndicator, Modal, Platform, Pressable, View } from 'react-native';
+import { AccessibilityInfo, ActivityIndicator, Modal, Platform, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import Animated, { Easing, FadeIn, FadeInDown, FadeOut, Keyframe, runOnJS, useAnimatedStyle, useSharedValue } from 'react-native-reanimated';
+import Animated, {
+  Easing,
+  FadeIn,
+  FadeInDown,
+  FadeOut,
+  Keyframe,
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+} from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { create } from 'zustand';
 import { feedback, type FeedbackEvent } from '@/feedback';
+// callStore imports `notify` from here; the cycle is safe because each side only uses the other at call/render time
+import { useCall } from '@/telephony/callStore';
 import { useTheme, type Tone, tone as toneOf } from '@/theme';
 import { animateTo, duration } from '@/theme/motion';
 import { Button, Icon, T, tap, type IconName } from './ui';
+import { Tappable } from './motion/Tappable';
 
 /** An action may return a promise; the toast then shows a spinner on it until it settles */
 type ToastActionT = { label: string; onPress: () => void | Promise<unknown> };
@@ -27,6 +39,10 @@ type FeedbackState = {
   hideToast: () => void;
   showDialog: (d: Dialog) => void;
   hideDialog: () => void;
+  /** Open sheets, oldest first. Sheets are Modals above the root host, so the top-most one renders the toast. */
+  sheets: number[];
+  pushSheet: (id: number) => void;
+  popSheet: (id: number) => void;
 };
 
 export const useFeedback = create<FeedbackState>((set) => ({
@@ -36,6 +52,9 @@ export const useFeedback = create<FeedbackState>((set) => ({
   hideToast: () => set({ toast: null }),
   showDialog: (dialog) => set({ dialog }),
   hideDialog: () => set({ dialog: null }),
+  sheets: [],
+  pushSheet: (id) => set((s) => ({ sheets: [...s.sheets, id] })),
+  popSheet: (id) => set((s) => ({ sheets: s.sheets.filter((x) => x !== id) })),
 }));
 
 const toastEvents: Partial<Record<Tone, FeedbackEvent>> = { success: 'toast.success', warning: 'toast.warning', error: 'toast.error' };
@@ -96,7 +115,7 @@ function ToastAction({ action, onDone }: { action: ToastActionT; onDone: () => v
   const { c } = useTheme();
   const [busy, setBusy] = useState(false);
   return (
-    <Pressable
+    <Tappable
       accessibilityRole="button"
       accessibilityState={{ busy, disabled: busy }}
       disabled={busy}
@@ -133,7 +152,7 @@ function ToastAction({ action, onDone }: { action: ToastActionT; onDone: () => v
           {action.label}
         </T>
       )}
-    </Pressable>
+    </Tappable>
   );
 }
 
@@ -256,25 +275,42 @@ function ToastCard({ toast, onHide }: { toast: Toast; onHide: () => void }) {
   );
 }
 
-export function FeedbackHost() {
-  const { c } = useTheme();
+/**
+ * The toast. The root host shows it only while no sheet is open; otherwise the top-most sheet renders this
+ * inside its own Modal (`sheetId`), since a Modal covers everything rendered outside it.
+ */
+export function ToastLayer({ sheetId }: { sheetId?: number }) {
   const insets = useSafeAreaInsets();
   const toast = useFeedback((s) => s.toast);
-  const dialog = useFeedback((s) => s.dialog);
   const hideToast = useFeedback((s) => s.hideToast);
+  const top = useFeedback((s) => s.sheets[s.sheets.length - 1]);
+  if (top !== sheetId) return null;
+  return (
+    // At the top, under the top bar: clear of the tab bar's Call button, the dial pad and the call controls
+    <View pointerEvents="box-none" style={{ position: 'absolute', left: 12, right: 12, top: insets.top + TOAST_TOP, alignItems: 'center' }}>
+      {toast && <ToastCard key={toast.id} toast={toast} onHide={hideToast} />}
+    </View>
+  );
+}
+
+export function FeedbackHost() {
+  const { c } = useTheme();
+  const dialog = useFeedback((s) => s.dialog);
   const hideDialog = useFeedback((s) => s.hideDialog);
+  const inCall = useCall((s) => !!s.call);
+  const wasInCall = useRef(inCall);
+
+  // A Modal stays above the incoming-call screen, so a ringing call would go unseen behind the dialog
+  useEffect(() => {
+    if (inCall && !wasInCall.current && useFeedback.getState().dialog) hideDialog();
+    wasInCall.current = inCall;
+  }, [inCall, hideDialog]);
 
   const dt = dialog ? toneOf(c, dialog.tone ?? 'warning') : null;
 
   return (
     <>
-      {/* At the top, under the top bar: clear of the tab bar's Call button, the dial pad and the call controls */}
-      <View
-        pointerEvents="box-none"
-        style={{ position: 'absolute', left: 12, right: 12, top: insets.top + TOAST_TOP, alignItems: 'center' }}
-      >
-        {toast && <ToastCard key={toast.id} toast={toast} onHide={hideToast} />}
-      </View>
+      <ToastLayer />
       <Modal visible={!!dialog} transparent animationType="fade" onRequestClose={hideDialog} statusBarTranslucent navigationBarTranslucent>
         <View style={{ flex: 1, backgroundColor: c.overlay, alignItems: 'center', justifyContent: 'center', padding: 24 }}>
           {dialog && dt && (

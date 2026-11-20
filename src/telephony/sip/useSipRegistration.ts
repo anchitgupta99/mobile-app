@@ -12,7 +12,8 @@ export function useSipRegistration() {
   useEffect(() => {
     if (!wanted) return;
     void useSipPhone.getState().start();
-    // JsSIP reconnects a dropped socket itself; a refused registration only gets another go on the way back in
+    // JsSIP reconnects a dropped socket itself; a refused registration only gets another go on the way back in,
+    // and not during a call: retry() would hang it up, so it skips itself then
     const sub = AppState.addEventListener('change', (state) => {
       if (state === 'active' && useSipPhone.getState().status === 'failed') void useSipPhone.getState().retry();
     });

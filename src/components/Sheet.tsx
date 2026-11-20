@@ -1,9 +1,20 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '@/theme';
 import { AnimatedSheet } from './motion/AnimatedSheet';
 import { IconButton, T } from './ui';
+
+/**
+ * The value from the last render where `open` was true. Sheets close by clearing what they show (`setLead(null)`), but
+ * stay on screen for the exit animation, so render this instead and they slide down with their content.
+ */
+export function useLastWhileOpen<V>(value: V, open: boolean): V {
+  const [kept, setKept] = useState(value);
+  // Adjust state during render (not in an effect), as AnimatedSheet does
+  if (open && kept !== value) setKept(value);
+  return open ? value : kept;
+}
 
 export function Sheet({
   open,

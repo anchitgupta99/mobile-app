@@ -1,5 +1,5 @@
-import { useState, type ReactNode } from 'react';
-import { ActivityIndicator, Pressable, View } from 'react-native';
+import { useEffect, useState, type ReactNode } from 'react';
+import { ActivityIndicator, View } from 'react-native';
 import Animated, { FadeIn, FadeOut, LinearTransition } from 'react-native-reanimated';
 import type { Analytics, CustomRange, DateRange } from '@/domain/analytics';
 import { useAgentAnalytics } from '@/hooks/useAgentAnalytics';
@@ -9,6 +9,7 @@ import { duration } from '@/theme/motion';
 import { InfoTip } from './InfoTip';
 import { Sheet } from './Sheet';
 import { Button, Card, Icon, Pill, SectionHeader, T, tap, type IconName } from './ui';
+import { Tappable } from './motion/Tappable';
 
 /** Categorical slots, validated for adjacent pairs and CVD on both surfaces. Light-mode slots 3–4 sit
  * under 3:1 contrast, so every chart below carries visible value labels. */
@@ -104,19 +105,23 @@ function StackBar({ parts, height = 12 }: { parts: { value: number; color: strin
       accessibilityLabel={parts.map((p) => `${p.label} ${Math.round((p.value / total) * 100)}%`).join(', ')}
       style={{ flexDirection: 'row', height, gap: GAP, borderRadius: 4, overflow: 'hidden', backgroundColor: c.surface }}
     >
-      {shown.map((p, i) => (
-        <View
-          key={p.label}
-          style={{
-            flex: p.value,
-            backgroundColor: p.color,
-            borderTopLeftRadius: i === 0 ? 4 : 0,
-            borderBottomLeftRadius: i === 0 ? 4 : 0,
-            borderTopRightRadius: i === shown.length - 1 ? 4 : 0,
-            borderBottomRightRadius: i === shown.length - 1 ? 4 : 0,
-          }}
-        />
-      ))}
+      {shown.map((p, i) => {
+        // Not inline: Reanimated's Babel plugin warns on any `.value` read inside a style object
+        const grow = p.value;
+        return (
+          <View
+            key={p.label}
+            style={{
+              flex: grow,
+              backgroundColor: p.color,
+              borderTopLeftRadius: i === 0 ? 4 : 0,
+              borderBottomLeftRadius: i === 0 ? 4 : 0,
+              borderTopRightRadius: i === shown.length - 1 ? 4 : 0,
+              borderBottomRightRadius: i === shown.length - 1 ? 4 : 0,
+            }}
+          />
+        );
+      })}
     </View>
   );
 }
@@ -174,7 +179,8 @@ function Collapsible({ title, summary, children }: { title: string; summary: str
   return (
     <Animated.View layout={LinearTransition.duration(duration.base)}>
       <Card padded={false}>
-        <Pressable
+        <Tappable
+          scaleTo={1}
           accessibilityRole="button"
           accessibilityState={{ expanded: open }}
           accessibilityLabel={`${title}, ${summary}`}
@@ -188,7 +194,7 @@ function Collapsible({ title, summary, children }: { title: string; summary: str
             gap: 10,
             paddingHorizontal: 16,
             minHeight: 56,
-            backgroundColor: pressed ? c.subtle : 'transparent',
+            backgroundColor: pressed ? c.pressed : 'transparent',
           })}
         >
           <T v="bodyStrong" style={{ flex: 1 }}>
@@ -198,7 +204,7 @@ function Collapsible({ title, summary, children }: { title: string; summary: str
             {summary}
           </T>
           <Icon name={open ? 'expand-less' : 'expand-more'} color={c.ink3} />
-        </Pressable>
+        </Tappable>
         {open && (
           <Animated.View
             entering={FadeIn.duration(duration.base)}
@@ -254,14 +260,18 @@ function rangeLabel(days: number) {
   return `${f.format(start)} – ${f.format(end)}`;
 }
 
-export function Dashboard() {
+/** `refreshKey`: bump it (e.g. on pull-to-refresh) to refetch the numbers. */
+export function Dashboard({ refreshKey = 0 }: { refreshKey?: number }) {
   const { c } = useTheme();
   const s = useSeries();
   const [range, setRange] = useState<DateRange>('today');
   const customRanges = customRangesNow();
   const [custom, setCustom] = useState<CustomRange>(customRanges[0]);
   const [pickOpen, setPickOpen] = useState(false);
-  const { data: a, error, reload } = useAgentAnalytics(range, custom);
+  const { data: a, stale, loading, error, reload } = useAgentAnalytics(range, custom);
+  useEffect(() => {
+    if (refreshKey) reload();
+  }, [refreshKey, reload]);
   const total = a ? a.inbound.total + a.outbound.total : 0;
 
   const ranges = (
@@ -305,111 +315,133 @@ export function Dashboard() {
     <View style={{ gap: 16 }}>
       {ranges}
 
-      <View>
-        <SectionHeader title="At a glance" />
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
-          <Tile
-            icon="call"
-            label="Total calls"
-            value={String(total)}
-            hint={`${a.inbound.total} in · ${a.outbound.total} out`}
-            tip={helpText.totalCalls}
-          />
-          <Tile
-            icon="record-voice-over"
-            label="Talk time"
-            value={hm(a.callTime.talk)}
-            hint={`Login ${hm(a.shift.login)}`}
-            tip={helpText.talkTime}
-          />
-          <Tile icon="timer" label="AHT" value={hms(a.aht.overall)} hint="Avg handling time" tip={helpText.aht} />
-        </View>
-      </View>
-
-      <View>
-        <SectionHeader title="Shift summary" />
-        <Card style={{ gap: 12 }}>
-          <View style={{ flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between' }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <T v="caption">Total login duration</T>
-              <InfoTip {...helpText.shiftSummary} size={14} />
-            </View>
-            <T v="h3" nums>
-              {hms(a.shift.login)}
-            </T>
+      {/* Errors show even over old numbers, so a failed refresh isn't mistaken for fresh data */}
+      {error ? (
+        <Card style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+          <Icon name="error-outline" size={20} color={c.errorFg} />
+          <T v="caption" color={c.errorFg} style={{ flex: 1 }}>
+            {error}
+          </T>
+          <Button label="Try again" icon="refresh" variant="outline" size="sm" onPress={reload} />
+        </Card>
+      ) : (
+        stale &&
+        loading && (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 4 }}>
+            <ActivityIndicator color={c.purple} />
+            <T v="caption">Loading your stats…</T>
           </View>
-          <StackBar
-            parts={[
-              { label: 'Call', value: a.shift.call, color: s[0] },
-              { label: 'Break', value: a.shift.brk, color: s[1] },
-              { label: 'Idle', value: a.shift.idle, color: s[2] },
-            ]}
-          />
-          <Legend
-            items={[
-              { label: 'Call', value: hm(a.shift.call), color: s[0] },
-              { label: 'Break', value: hm(a.shift.brk), color: s[1] },
-              { label: 'Idle', value: hm(a.shift.idle), color: s[2] },
-            ]}
-          />
-        </Card>
-      </View>
+        )
+      )}
 
-      <View>
-        <SectionHeader title="Calls" count={total} />
-        <Card style={{ gap: 18 }}>
-          <CallsRow
-            icon="call-received"
-            label="Inbound"
-            total={a.inbound.total}
-            ok={a.inbound.answered}
-            okLabel="Answered"
-            bad={a.inbound.abandoned}
-            badLabel="Abandoned"
-          />
-          <View style={{ height: 1, backgroundColor: c.divider }} />
-          <CallsRow
-            icon="call-made"
-            label="Outbound"
-            total={a.outbound.total}
-            ok={a.outbound.answered}
-            okLabel="Answered"
-            bad={a.outbound.missed}
-            badLabel="Customer missed"
-          />
-        </Card>
-      </View>
+      {/* Dimmed while the numbers belong to the previous range */}
+      <View style={{ gap: 16, opacity: stale ? 0.4 : 1 }} accessibilityState={{ busy: stale && loading }}>
+        <View>
+          <SectionHeader title="At a glance" />
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
+            <Tile
+              icon="call"
+              label="Total calls"
+              value={String(total)}
+              hint={`${a.inbound.total} in · ${a.outbound.total} out`}
+              tip={helpText.totalCalls}
+            />
+            <Tile
+              icon="record-voice-over"
+              label="Talk time"
+              value={hm(a.callTime.talk)}
+              hint={`Login ${hm(a.shift.login)}`}
+              tip={helpText.talkTime}
+            />
+            <Tile icon="timer" label="AHT" value={hms(a.aht.overall)} hint="Avg handling time" tip={helpText.aht} />
+          </View>
+        </View>
 
-      <View style={{ gap: 10 }}>
-        <SectionHeader title="See more" />
-        <Collapsible title="Call time" summary={hms(a.shift.call)}>
-          <StackBar
-            parts={[
-              { label: 'Ringing', value: a.callTime.ringing, color: s[0] },
-              { label: 'Talk', value: a.callTime.talk, color: s[1] },
-              { label: 'Hold', value: a.callTime.hold, color: s[2] },
-              { label: 'Wrap', value: a.callTime.wrap, color: s[3] },
-            ]}
-          />
-          <Legend
-            items={[
-              { label: 'Ringing', value: hm(a.callTime.ringing), color: s[0] },
-              { label: 'Talk', value: hm(a.callTime.talk), color: s[1] },
-              { label: 'Hold', value: hm(a.callTime.hold), color: s[2] },
-              { label: 'Wrap', value: hm(a.callTime.wrap), color: s[3] },
-            ]}
-          />
-        </Collapsible>
-        <Collapsible title="Break time" summary={hm(a.shift.brk)}>
-          <BreakBars a={a} />
-        </Collapsible>
+        <View>
+          <SectionHeader title="Shift summary" />
+          <Card style={{ gap: 12 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between' }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <T v="caption">Total login duration</T>
+                <InfoTip {...helpText.shiftSummary} size={14} />
+              </View>
+              <T v="h3" nums>
+                {hms(a.shift.login)}
+              </T>
+            </View>
+            <StackBar
+              parts={[
+                { label: 'Call', value: a.shift.call, color: s[0] },
+                { label: 'Break', value: a.shift.brk, color: s[1] },
+                { label: 'Idle', value: a.shift.idle, color: s[2] },
+              ]}
+            />
+            <Legend
+              items={[
+                { label: 'Call', value: hm(a.shift.call), color: s[0] },
+                { label: 'Break', value: hm(a.shift.brk), color: s[1] },
+                { label: 'Idle', value: hm(a.shift.idle), color: s[2] },
+              ]}
+            />
+          </Card>
+        </View>
+
+        <View>
+          <SectionHeader title="Calls" count={total} />
+          <Card style={{ gap: 18 }}>
+            <CallsRow
+              icon="call-received"
+              label="Inbound"
+              total={a.inbound.total}
+              ok={a.inbound.answered}
+              okLabel="Answered"
+              bad={a.inbound.abandoned}
+              badLabel="Abandoned"
+            />
+            <View style={{ height: 1, backgroundColor: c.divider }} />
+            <CallsRow
+              icon="call-made"
+              label="Outbound"
+              total={a.outbound.total}
+              ok={a.outbound.answered}
+              okLabel="Answered"
+              bad={a.outbound.missed}
+              badLabel="Customer missed"
+            />
+          </Card>
+        </View>
+
+        <View style={{ gap: 10 }}>
+          <SectionHeader title="See more" />
+          <Collapsible title="Call time" summary={hms(a.shift.call)}>
+            <StackBar
+              parts={[
+                { label: 'Ringing', value: a.callTime.ringing, color: s[0] },
+                { label: 'Talk', value: a.callTime.talk, color: s[1] },
+                { label: 'Hold', value: a.callTime.hold, color: s[2] },
+                { label: 'Wrap', value: a.callTime.wrap, color: s[3] },
+              ]}
+            />
+            <Legend
+              items={[
+                { label: 'Ringing', value: hm(a.callTime.ringing), color: s[0] },
+                { label: 'Talk', value: hm(a.callTime.talk), color: s[1] },
+                { label: 'Hold', value: hm(a.callTime.hold), color: s[2] },
+                { label: 'Wrap', value: hm(a.callTime.wrap), color: s[3] },
+              ]}
+            />
+          </Collapsible>
+          <Collapsible title="Break time" summary={hm(a.shift.brk)}>
+            <BreakBars a={a} />
+          </Collapsible>
+        </View>
       </View>
 
       <Sheet open={pickOpen} onClose={() => setPickOpen(false)} title="Custom date" scroll={false}>
         {customRanges.map((r) => {
           const on = range === 'custom' && custom.label === r.label;
           return (
-            <Pressable
+            <Tappable
               key={r.label}
               accessibilityRole="radio"
               accessibilityState={{ checked: on }}
@@ -427,7 +459,7 @@ export function Dashboard() {
                 paddingHorizontal: 14,
                 borderRadius: 12,
                 borderWidth: 1,
-                borderColor: on ? c.purple : c.line,
+                borderColor: on ? c.purple : c.controlBorder,
                 backgroundColor: on ? c.selected : c.surface,
               }}
             >
@@ -438,7 +470,7 @@ export function Dashboard() {
                 </T>
               </View>
               {on && <Icon name="check" color={c.purple} />}
-            </Pressable>
+            </Tappable>
           );
         })}
       </Sheet>

@@ -30,8 +30,25 @@ const notificationsSupported = Notifications !== null;
 
 const unsupported = (): Promise<Response> => Promise.reject(new Error('expo-notifications unavailable'));
 
+/**
+ * On the web, expo-audio's "get" falls through to getUserMedia when the browser hasn't decided yet, so a plain
+ * refresh pops the browser prompt and a dismissed prompt reads as denied. Query the Permissions API instead and
+ * treat "prompt" as undetermined; only the Allow button asks.
+ */
+async function getMicPermission(): Promise<Response> {
+  if (Platform.OS !== 'web') return getRecordingPermissionsAsync();
+  try {
+    const { state } = await navigator.permissions.query({ name: 'microphone' as PermissionName });
+    if (state === 'granted') return { granted: true, status: 'granted' };
+    if (state === 'denied') return { granted: false, status: 'denied', canAskAgain: true };
+  } catch {
+    // Firefox and older Safari can't query the microphone; fall through to undetermined
+  }
+  return { granted: false, status: 'undetermined' };
+}
+
 const api: Record<PermissionKind, { get: () => Promise<Response>; request: () => Promise<Response> }> = {
-  mic: { get: getRecordingPermissionsAsync, request: requestRecordingPermissionsAsync },
+  mic: { get: getMicPermission, request: requestRecordingPermissionsAsync },
   notifications: {
     get: () => Notifications?.getPermissionsAsync() ?? unsupported(),
     request: () => Notifications?.requestPermissionsAsync() ?? unsupported(),
@@ -97,3 +114,9 @@ export function usePermissions() {
 }
 
 export const isMissing = (s: PermissionState) => s === 'denied' || s === 'blocked' || s === 'undetermined';
+
+/**
+ * Whether the mic lets the agent go live. Browsers ask for the mic on first use, so the web build only warns
+ * instead of blocking. The pre-flight header and the Go live button both read this, so they can't disagree.
+ */
+export const micAllowsGoLive = (s: PermissionState) => s === 'granted' || s === 'unsupported' || Platform.OS === 'web';

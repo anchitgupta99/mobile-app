@@ -1,10 +1,10 @@
 import { router } from 'expo-router';
 import { useRef, useState } from 'react';
-import { KeyboardAvoidingView, Linking, Pressable, ScrollView, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Linking, ScrollView, TextInput, View } from 'react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ApiError } from '@/api/client';
-import { DEMO } from '@/api/http';
+import { DEMO, TIMED_OUT } from '@/api/http';
 import { InfoTip } from '@/components/InfoTip';
 import { Logo } from '@/components/Logo';
 import { helpText } from '@/domain/helpText';
@@ -14,6 +14,7 @@ import { useSession } from '@/store/session';
 import { useTheme } from '@/theme';
 import { duration } from '@/theme/motion';
 import { keyboardBehavior } from '@/components/keyboard';
+import { Tappable } from '@/components/motion/Tappable';
 
 const modeCopy: Record<LoginMode, { title: string; hint: string }> = {
   webrtc: { title: 'Log In', hint: 'Calls ring in the app over the internet (SIP webphone).' },
@@ -39,8 +40,13 @@ export default function Login() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const pwRef = useRef<TextInput>(null);
+  // Set synchronously, unlike `busy`: the keyboard's Go skips the button's disabled state, and a double tap would
+  // otherwise send two logins whose replies can arrive out of order (a stale token, then "session expired")
+  const running = useRef(false);
 
   const run = async () => {
+    if (running.current || !loginId || !password) return;
+    running.current = true;
     setError(null);
     setBusy(true);
     try {
@@ -62,13 +68,15 @@ export default function Login() {
         return;
       }
       setError(
-        e instanceof ApiError && e.code === 'offline'
+        // A timed-out request keeps its own words ("timed out"): it may be a slow server, not a missing connection
+        e instanceof ApiError && e.code === 'offline' && e.reason !== TIMED_OUT
           ? 'No connection. Logging in needs the internet once.'
           : e instanceof Error
             ? e.message
             : 'Log in failed',
       );
     } finally {
+      running.current = false;
       setBusy(false);
     }
   };
@@ -167,7 +175,7 @@ export default function Login() {
               />
             }
           />
-          <Pressable
+          <Tappable
             accessibilityRole="link"
             onPress={() => router.push('/forgot-password')}
             hitSlop={12}
@@ -176,7 +184,7 @@ export default function Login() {
             <T v="label" color={c.purple}>
               Forgot your password?
             </T>
-          </Pressable>
+          </Tappable>
           {DEMO && (
             <View
               accessibilityRole="text"

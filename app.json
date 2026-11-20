@@ -18,6 +18,7 @@
     },
     "android": {
       "package": "ai.claritel.agent",
+      "allowBackup": false,
       "adaptiveIcon": {
         "backgroundColor": "#E6E6FF",
         "foregroundImage": "./assets/android-icon-foreground.png",

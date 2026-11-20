@@ -44,8 +44,18 @@ export function detailProgress(fields: CaptureField[], entries: Record<string, D
   };
 }
 
-export function missingRequired(fields: CaptureField[], entries: Record<string, DetailEntry>) {
-  return fields.filter((f) => f.required && !isCaptured(f, entries[f.key]));
+/** Captured and saved to the lead, or with its save on the way: what the CRM will have */
+export function isStored(field: CaptureField, e: DetailEntry | undefined) {
+  return isCaptured(field, e) && (e?.save === 'saved' || e?.save === 'saving');
+}
+
+/**
+ * The required details not captured yet. `saved`: for a call with a lead, where each detail is saved to it on its
+ * own, a value whose save hasn't gone through (not sent, or failed) doesn't count either: the CRM doesn't have it.
+ */
+export function missingRequired(fields: CaptureField[], entries: Record<string, DetailEntry>, opts?: { saved?: boolean }) {
+  const counts = opts?.saved ? isStored : isCaptured;
+  return fields.filter((f) => f.required && !counts(f, entries[f.key]));
 }
 
 /** The chosen outcome's category: its own, else the nearest parent's (path is top-level first) */

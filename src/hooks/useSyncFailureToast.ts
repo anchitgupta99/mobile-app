@@ -4,8 +4,9 @@ import { notify } from '@/components/feedback';
 import { useOutbox } from '@/store/outbox';
 
 /**
- * Tells the agent the moment a change is turned down. Backend: each change is sent once, straight away, and its
- * failure reads as the web's. Demo: saves are local-first, so a rejection only shows up later, with Review.
+ * Tells the agent the moment a change is turned down: each change is sent once, straight away, and its failure
+ * reads as the web's (the change is undone by whoever made it). The second toast, with Review, is only for changes
+ * an older build left queued on the phone, when a retry from the Sync screen is turned down again.
  */
 export function useSyncFailureToast() {
   useEffect(

@@ -78,9 +78,10 @@ export const useSession = create<SessionState>()(
         useCampaigns.setState({ error: null });
         const { items, defaultId, allowSelection } = await api.campaigns.list();
         if (__DEV__) console.log('[Campaign] list', items.map((c) => c.name), 'default', defaultId);
-        useCampaigns.setState({ list: items, allowSelection });
+        // Signed out (or in as someone else) while this loaded: don't bring the old agent's campaigns back
         const a = get().agent;
         if (!a || get().token !== token) return;
+        useCampaigns.setState({ list: items, allowSelection });
         // Same order as the web: the campaign already in use, then the agent's default, then the first one
         const pick = items.find((c) => c.id === a.campaignId) ?? items.find((c) => c.id === defaultId) ?? items[0];
         if (!pick) {
@@ -115,7 +116,24 @@ export const useSession = create<SessionState>()(
         set({ agent: { ...a, campaignId: c.id, campaignName: c.name } });
         useData.getState().setCampaign(c.id);
         // Someone who was taking calls goes straight back online in the new campaign
-        if (get().live && get().status === 'available') await api.agents.goOnline(c.id);
+        if (get().live && get().status === 'available') {
+          try {
+            await api.agents.goOnline(c.id);
+          } catch (e) {
+            // The switch went through, so the server has the agent paused in the new campaign: say so, rather
+            // than "Couldn't switch" with the pill still on Available
+            set({ status: 'offline', breakCode: null, statusSince: new Date().toISOString() });
+            const why = e instanceof ApiError && e.message ? ` ${e.message}` : '';
+            const err = new ApiError(
+              e instanceof ApiError ? e.code : 'server',
+              `Switched to ${c.name}, but couldn't go online.${why}`,
+              e instanceof ApiError ? e.reason : undefined,
+            );
+            // The switch itself is done: the menu shows it switched, with this as a warning
+            err.partial = true;
+            throw err;
+          }
+        }
       },
       updateAgent: (patch) => {
         const a = get().agent;
@@ -124,17 +142,27 @@ export const useSession = create<SessionState>()(
       setStatus: (status, opts) => {
         const breakCode = status === 'break' ? (opts?.breakCode ?? null) : null;
         if (status === get().status && breakCode === get().breakCode) return;
+        const before = { status: get().status, breakCode: get().breakCode, statusSince: get().statusSince };
         set({ status, breakCode, statusSince: new Date().toISOString() });
         // A change made elsewhere (web, supervisor) supersedes anything still queued here; otherwise
         // reconnecting would replay a stale Break over it.
         if (opts?.remote) useOutbox.getState().dropKind('status');
         else
-          useOutbox.getState().enqueue({
-            kind: 'status',
-            label: `Status · ${breakCode ? `${status} (${breakCode})` : status}`,
-            // Going online is per campaign on the server
-            payload: { status, breakCode, campaignId: get().agent?.campaignId },
-          });
+          useOutbox.getState().enqueue(
+            {
+              kind: 'status',
+              label: `Status · ${breakCode ? `${status} (${breakCode})` : status}`,
+              // Going online is per campaign on the server
+              payload: { status, breakCode, campaignId: get().agent?.campaignId },
+            },
+            {
+              // Turned down: back to the status the agent had, unless it has changed again since (a later pick,
+              // or the server's own update). The same status can then be picked again.
+              onFail: () => {
+                if (get().status === status && get().breakCode === breakCode) set(before);
+              },
+            },
+          );
       },
       lock: () => set({ locked: true }),
       unlock: () => set({ locked: false, lastActiveAt: Date.now() }),

@@ -1,6 +1,6 @@
 import { router, useLocalSearchParams, useNavigation, useRootNavigationState } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, KeyboardAvoidingView, Pressable, ScrollView, View } from 'react-native';
+import { ActivityIndicator, KeyboardAvoidingView, ScrollView, View } from 'react-native';
 import Animated, { FadeIn, FadeOut, LinearTransition } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { api } from '@/api/client';
@@ -8,7 +8,7 @@ import { webText } from '@/api/errors';
 import { DetailFields } from '@/components/call/DetailFields';
 import { DispositionPicker } from '@/components/DispositionPicker';
 import { Sheet } from '@/components/Sheet';
-import { categoryOf, missingRequired } from '@/domain/details';
+import { categoryOf, isCaptured, missingRequired } from '@/domain/details';
 import { capturedValues, useDetails } from '@/store/details';
 import { feedback } from '@/feedback';
 import { duration } from '@/theme/motion';
@@ -28,6 +28,7 @@ import { useSession } from '@/store/session';
 import { sendableName, useCall } from '@/telephony/callStore';
 import { font, useTheme } from '@/theme';
 import { keyboardBehavior } from '@/components/keyboard';
+import { Tappable } from '@/components/motion/Tappable';
 
 function presets(now: Date) {
   const at = (d: Date, h: number, m = 0) => {
@@ -51,10 +52,24 @@ function presets(now: Date) {
   ];
 }
 
-function DateTimeField({ field, value, onChange }: { field: DispositionField; value: string; onChange: (v: string) => void }) {
+/** How soon a picked time can be: "15 minutes earlier" stops short of the past */
+const SOONEST_MS = 5 * 60000;
+
+function DateTimeField({
+  field,
+  value,
+  onChange,
+  now,
+}: {
+  field: DispositionField;
+  value: string;
+  onChange: (v: string) => void;
+  now: number;
+}) {
   const { c } = useTheme();
   const opts = useMemo(() => presets(new Date()), []);
   const cur = value ? new Date(value) : null;
+  const canEarlier = !!cur && cur.getTime() - 15 * 60000 >= now + SOONEST_MS;
   const nudge = (min: number) => {
     const base = cur ?? opts[0].value;
     onChange(new Date(base.getTime() + min * 60000).toISOString());
@@ -91,7 +106,7 @@ function DateTimeField({ field, value, onChange }: { field: DispositionField; va
           <T v="bodyStrong" style={{ flex: 1 }} nums>
             {formatWhen(cur.toISOString())}
           </T>
-          <IconButton icon="remove" label="15 minutes earlier" size={40} onPress={() => nudge(-15)} />
+          <IconButton icon="remove" label="15 minutes earlier" size={40} onPress={() => nudge(-15)} disabled={!canEarlier} />
           <IconButton icon="add" label="15 minutes later" size={40} onPress={() => nudge(15)} />
         </View>
       )}
@@ -115,7 +130,7 @@ function RouteChoice({
 }) {
   const { c } = useTheme();
   return (
-    <Pressable
+    <Tappable
       accessibilityRole="radio"
       accessibilityState={{ checked: on }}
       accessibilityLabel={`${title}, ${body}`}
@@ -131,8 +146,8 @@ function RouteChoice({
         padding: 12,
         borderRadius: 10,
         borderWidth: on ? 2 : 1,
-        borderColor: on ? c.purple : c.line,
-        backgroundColor: pressed ? c.subtle : on ? c.selected : c.surface,
+        borderColor: on ? c.purple : c.controlBorder,
+        backgroundColor: pressed ? c.pressed : on ? c.selected : c.surface,
       })}
     >
       <Icon name={icon} size={18} color={on ? c.purple : c.ink2} />
@@ -144,7 +159,7 @@ function RouteChoice({
           {body}
         </T>
       </View>
-    </Pressable>
+    </Tappable>
   );
 }
 
@@ -206,7 +221,8 @@ export default function WrapUp() {
     dispositions: [],
     acwSeconds: findCampaign(campaignId)?.wrapUpSeconds ?? 30,
   };
-  const loadingDispositions = fromServer && !remote;
+  // A call without a campaign has no template to load: it is closed with no disposition, as one without options
+  const loadingDispositions = fromServer && !!campaignId && !remote;
   // Wrap-up replaced the active-call screen, so the route under it is wherever the call started.
   // Only unwind to the callbacks list when that was the tab group; from a contact or task page a
   // plain back keeps the agent's place.
@@ -219,7 +235,10 @@ export default function WrapUp() {
   const chosen = isComplete(path) ? path[path.length - 1] : null;
   // Fields can sit on any level of the path, e.g. "Sale" asks for the amount whichever product was sold
   const pathFields = useMemo(() => path.flatMap((d) => d.fields), [path]);
-  const [notes, setNotes] = useState(call?.notes || '');
+  // The record's note until the agent edits it: a transfer confirmed after its hang-up already opened this screen
+  // notes itself on the record a moment later
+  const [notesDraft, setNotes] = useState<string | null>(null);
+  const notes = notesDraft ?? call?.notes ?? '';
   const [fields, setFields] = useState<Record<string, string>>({});
   const [touched, setTouched] = useState(false);
   // Which Submit is with the server, and why the server last turned it down (shown above the buttons, as the web's)
@@ -293,7 +312,7 @@ export default function WrapUp() {
   const acwLeft = config.acwSeconds - Math.floor((now - opened) / 1000);
   const missing = pathFields.filter((f) => f.required && !fields[f.key]?.trim());
   // A campaign without a disposition template has nothing to pick; the call still gets closed
-  const noOptions = !!remote && remote.dispositions.length === 0;
+  const noOptions = (!!remote && remote.dispositions.length === 0) || (fromServer && !campaignId);
   // Backend: the template's switches (all on when the list didn't say, as the web) and the deepest outcome
   // picked so far, which decides a required callback or a do-not-call outcome as on the web
   const prefs = config.prefs ?? { callbackEnabled: true, dncEnabled: true, notesEnabled: true, notesRequired: false };
@@ -314,7 +333,11 @@ export default function WrapUp() {
   // Required details: only a "connected" outcome needs them. No answer, busy, wrong number and DNC go through, so
   // nobody has to make data up to get past the check. "Customer declined to share" counts as captured.
   const connected = categoryOf(path) === 'connected';
-  const detailsMissing = connected && details ? missingRequired(details.fields, details.entries) : [];
+  // With a lead, each detail is saved to it as it's captured: one whose save didn't go through isn't in the CRM, so
+  // it still needs attention (Submit tries those saves again). Without a lead they go with the disposition.
+  const detailsMissing = connected && details ? missingRequired(details.fields, details.entries, { saved: !!details.leadId }) : [];
+  const detailsUnsaved = details ? detailsMissing.filter((f) => isCaptured(f, details.entries[f.key])) : [];
+  const detailsEmpty = detailsMissing.filter((f) => !detailsUnsaved.includes(f));
   const valid =
     (noOptions || !!chosen) &&
     missing.length === 0 &&
@@ -366,6 +389,7 @@ export default function WrapUp() {
     setTouched(true);
     if (!timeout && !valid) {
       tap('warning');
+      if (detailsUnsaved.length) useDetails.getState().saveUnsaved(call.id);
       return;
     }
     setSubmitError(null);
@@ -452,7 +476,7 @@ export default function WrapUp() {
     if (f.kind === 'datetime')
       return (
         <View>
-          <DateTimeField field={f} value={v} onChange={set} />
+          <DateTimeField field={f} value={v} onChange={set} now={now} />
           {err && (
             <T v="caption" color={c.errorFg} style={{ marginTop: 6 }}>
               Choose when to call back
@@ -601,14 +625,39 @@ export default function WrapUp() {
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
               <Icon name="assignment-late" size={20} color={c.warningFg} />
               <T v="bodyStrong" style={{ flex: 1 }}>
-                {detailsMissing.length === 1 ? '1 required detail is missing' : `${detailsMissing.length} required details are missing`}
+                {detailsEmpty.length
+                  ? detailsEmpty.length === 1
+                    ? '1 required detail is missing'
+                    : `${detailsEmpty.length} required details are missing`
+                  : detailsUnsaved.length === 1
+                    ? '1 required detail isn’t saved yet'
+                    : `${detailsUnsaved.length} required details aren’t saved yet`}
               </T>
             </View>
-            <T v="caption" color={c.ink}>
-              A connected call needs {detailsMissing.map((f) => f.label).join(', ')}. Add {detailsMissing.length === 1 ? 'it' : 'them'}, or
-              mark that the customer declined to share.
-            </T>
-            <Button label="Add details" icon="edit-note" variant="secondary" onPress={() => setDetailsOpen(true)} />
+            {detailsEmpty.length > 0 && (
+              <T v="caption" color={c.ink}>
+                A connected call needs {detailsEmpty.map((f) => f.label).join(', ')}. Add {detailsEmpty.length === 1 ? 'it' : 'them'}, or
+                mark that the customer declined to share.
+              </T>
+            )}
+            {detailsUnsaved.length > 0 && (
+              <T v="caption" color={c.ink}>
+                {detailsUnsaved.map((f) => f.label).join(', ')} didn’t reach the CRM yet. Save {detailsUnsaved.length === 1 ? 'it' : 'them'}{' '}
+                again before you submit.
+              </T>
+            )}
+            <View style={{ flexDirection: 'row', gap: 10 }}>
+              {detailsUnsaved.length > 0 && (
+                <Button
+                  label="Save again"
+                  icon="refresh"
+                  variant="secondary"
+                  style={{ flex: 1 }}
+                  onPress={() => useDetails.getState().saveUnsaved(call.id)}
+                />
+              )}
+              <Button label="Add details" icon="edit-note" variant="secondary" style={{ flex: 1 }} onPress={() => setDetailsOpen(true)} />
+            </View>
           </View>
         )}
 
@@ -661,6 +710,7 @@ export default function WrapUp() {
                   field={{ kind: 'datetime', key: 'callback', label: 'Callback date & time', required: true, createsTask: true }}
                   value={callbackAt}
                   onChange={setCallbackAt}
+                  now={now}
                 />
                 {touched && !callbackAt && (
                   <T v="caption" color={c.errorFg}>
@@ -707,7 +757,7 @@ export default function WrapUp() {
             style={{ flex: 1 }}
             loading={saving === 'break'}
             onPress={() => void submit('break')}
-            disabled={!!saving}
+            disabled={(touched && !valid) || !!saving}
           />
         </View>
         <T v="caption" color={c.ink3} style={{ textAlign: 'center', fontFamily: font.regular }}>

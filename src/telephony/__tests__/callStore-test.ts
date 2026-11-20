@@ -5,7 +5,14 @@ import { useCall } from '../callStore';
 
 // The toasts are UI (Reanimated), and the call audio is native (InCallManager): neither loads under Jest
 jest.mock('@/components/feedback', () => ({ alertDialog: jest.fn(), notify: jest.fn() }));
-jest.mock('../sip/audioRoute', () => ({ startCallAudio: jest.fn(), stopCallAudio: jest.fn(), setCallAudioRoute: jest.fn() }));
+jest.mock('../sip/audioRoute', () => ({
+  startCallAudio: jest.fn(() => Promise.resolve(null)),
+  stopCallAudio: jest.fn(),
+  setCallAudioRoute: jest.fn(() => Promise.resolve(null)),
+  watchAudioDevices: jest.fn(() => () => undefined),
+  startRingtone: jest.fn(),
+  stopRingtone: jest.fn(),
+}));
 
 /** An inbound call with accept/reject, as the server's INVITE describes it: it rings until Accept or Decline */
 const ringing = (): IncomingSipCall => ({

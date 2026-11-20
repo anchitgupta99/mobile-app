@@ -1,7 +1,14 @@
 import { Tabs, type BottomTabBarProps } from 'expo-router/js-tabs';
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { Pressable, View } from 'react-native';
-import Animated, { interpolateColor, useAnimatedStyle, useReducedMotion, useSharedValue, withSequence, withTiming } from 'react-native-reanimated';
+import Animated, {
+  interpolateColor,
+  useAnimatedStyle,
+  useReducedMotion,
+  useSharedValue,
+  withSequence,
+  withTiming,
+} from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AppMenu } from '@/components/AppMenu';
 import { StatusBanners } from '@/components/StatusBanners';
@@ -10,11 +17,13 @@ import { TopBar } from '@/components/TopBar';
 import { CountBadge, Icon, T, tap, type IconName } from '@/components/ui';
 import { feedback } from '@/feedback';
 import { useDial, useDialAvailability } from '@/hooks/useDial';
+import { useNow } from '@/hooks/useNow';
 import { useData } from '@/store/data';
 import { useDialpad } from '@/store/dialpad';
 import { useCall } from '@/telephony/callStore';
 import { font, useTheme } from '@/theme';
 import { animateTo } from '@/theme/motion';
+import { Tappable } from '@/components/motion/Tappable';
 
 const tabs: Record<string, { label: string; icon: IconName }> = {
   index: { label: 'Home', icon: 'home' },
@@ -25,7 +34,11 @@ const tabs: Record<string, { label: string; icon: IconName }> = {
 };
 
 function useBadges() {
-  const overdue = useData((s) => s.tasks.filter((t) => !t.done && new Date(t.dueAt).getTime() < Date.now()).length);
+  // The clock comes from useNow, not from inside the selector: a selector only reruns when the store changes, so a
+  // callback falling overdue would never update the badge
+  const tasks = useData((s) => s.tasks);
+  const now = useNow(30000);
+  const overdue = useMemo(() => tasks.filter((t) => !t.done && new Date(t.dueAt).getTime() < now).length, [tasks, now]);
   return { callbacks: overdue } as Record<string, number>;
 }
 
@@ -168,7 +181,7 @@ function TabBar({ state, navigation }: BottomTabBarProps) {
           return <DialButton key={route.key} focused={focused} onCall={onCall} label={meta.label} onNavigate={onPress} />;
         }
         return (
-          <Pressable
+          <Tappable
             key={route.key}
             accessibilityRole="tab"
             accessibilityLabel={`${meta.label}${badges[route.name] ? `, ${badges[route.name]} need attention` : ''}`}
@@ -176,27 +189,32 @@ function TabBar({ state, navigation }: BottomTabBarProps) {
             onPress={onPress}
             style={{ flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: 52, gap: 2 }}
           >
-            <View
-              style={{
-                width: 56,
-                height: 30,
-                borderRadius: 15,
-                alignItems: 'center',
-                justifyContent: 'center',
-                backgroundColor: focused ? c.lavenderSoft : 'transparent',
-              }}
-            >
-              <TabIcon name={meta.icon} focused={focused} color={focused ? c.accentInk : c.ink2} />
-              {!!badges[route.name] && (
-                <View style={{ position: 'absolute', top: -4, right: 6 }}>
-                  <CountBadge n={badges[route.name]} />
+            {({ pressed }) => (
+              <>
+                <View
+                  style={{
+                    width: 56,
+                    height: 30,
+                    borderRadius: 15,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    // The pill shows on press too, so a tap is acknowledged before the screen changes
+                    backgroundColor: focused ? c.tabSelected : pressed ? c.pressed : 'transparent',
+                  }}
+                >
+                  <TabIcon name={meta.icon} focused={focused} color={focused ? c.accentInk : c.ink2} />
+                  {!!badges[route.name] && (
+                    <View style={{ position: 'absolute', top: -4, right: 6 }}>
+                      <CountBadge n={badges[route.name]} />
+                    </View>
+                  )}
                 </View>
-              )}
-            </View>
-            <T v="caption" color={focused ? c.accentInk : c.ink2} style={{ fontFamily: focused ? font.bold : font.medium }}>
-              {meta.label}
-            </T>
-          </Pressable>
+                <T v="caption" color={focused ? c.accentInk : c.ink2} style={{ fontFamily: focused ? font.bold : font.medium }}>
+                  {meta.label}
+                </T>
+              </>
+            )}
+          </Tappable>
         );
       })}
     </View>
@@ -206,16 +224,15 @@ function TabBar({ state, navigation }: BottomTabBarProps) {
 export default function TabsLayout() {
   const { c } = useTheme();
   return (
-    <>
+    <View style={{ flex: 1, backgroundColor: c.page }}>
+      {/* One TopBar for all tabs, above the navigator: as each screen's header, every visited tab kept its own copy
+          mounted, with its own timers and status-change feedback */}
+      <TopBar />
+      <StatusBanners />
       <Tabs
         tabBar={(p) => <TabBar {...p} />}
         screenOptions={{
-          header: () => (
-            <>
-              <TopBar />
-              <StatusBanners />
-            </>
-          ),
+          headerShown: false,
           sceneStyle: { backgroundColor: c.page },
         }}
       >
@@ -227,6 +244,6 @@ export default function TabsLayout() {
       </Tabs>
       <StatusSheet />
       <AppMenu />
-    </>
+    </View>
   );
 }

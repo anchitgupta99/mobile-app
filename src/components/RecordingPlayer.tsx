@@ -1,12 +1,17 @@
 import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
+import { useIsFocused } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, View, type LayoutChangeEvent } from 'react-native';
+import { ActivityIndicator, AppState, Pressable, View, type LayoutChangeEvent } from 'react-native';
 import { api, ApiError } from '@/api/client';
+import { TIMED_OUT } from '@/api/http';
+import { restoreUiAudioMode, setPlaybackAudioMode } from '@/feedback/sounds';
+import { useCall } from '@/telephony/callStore';
 import { formatDuration, formatWhen } from '@/domain/format';
 import type { CallRecord } from '@/domain/types';
 import { useNow } from '@/hooks/useNow';
 import { minTap, useTheme } from '@/theme';
 import { Card, Icon, IconButton, Pill, T } from './ui';
+import { Tappable } from './motion/Tappable';
 
 const LOAD_TIMEOUT_MS = 10000;
 
@@ -33,6 +38,38 @@ export function RecordingPlayer({ call }: { call: CallRecord }) {
     if (state === 'ready') player.setPlaybackRate(rate);
   }, [player, rate, state]);
 
+  // Never keep playing where the agent can't see the player or under a call
+  const focused = useIsFocused();
+  const inCall = useCall((s) => !!s.call);
+  useEffect(() => {
+    if (!focused || inCall) player.pause();
+  }, [focused, inCall, player]);
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next !== 'active') player.pause();
+    });
+    return () => sub.remove();
+  }, [player]);
+
+  // Playback switches the audio mode (see play); hand it back to the UI sounds once it stops or the player goes away
+  const wasPlaying = useRef(false);
+  useEffect(() => {
+    if (wasPlaying.current && !status.playing) void restoreUiAudioMode();
+    wasPlaying.current = status.playing;
+  }, [status.playing]);
+  useEffect(
+    () => () => {
+      if (wasPlaying.current) void restoreUiAudioMode();
+    },
+    [],
+  );
+
+  /** The UI-sound mode respects the silent switch; a recording the agent asked for should not */
+  const play = async () => {
+    await setPlaybackAudioMode();
+    player.play();
+  };
+
   // The player reports no error of its own when a source can't be fetched; a link that is still
   // not loaded after a while is treated as broken rather than spinning forever.
   useEffect(() => {
@@ -44,18 +81,44 @@ export function RecordingPlayer({ call }: { call: CallRecord }) {
     return () => clearTimeout(t);
   }, [state, status.isLoaded]);
 
+  // Where to pick up once a reloaded link has loaded (a fresh link starts the file from 0)
+  const resumeAt = useRef(0);
+  useEffect(() => {
+    if (state !== 'ready' || !status.isLoaded || !resumeAt.current) return;
+    const at = resumeAt.current;
+    resumeAt.current = 0;
+    void player.seekTo(at);
+  }, [player, state, status.isLoaded]);
+
+  // `state` only updates on the next render, so a fast second tap would fetch the link twice
+  const loading = useRef(false);
   const load = async () => {
+    if (loading.current) return;
+    loading.current = true;
+    // Reloading an expired link mid-recording carries on from the same place
+    resumeAt.current = state === 'ready' && !status.didJustFinish && status.currentTime < dur ? status.currentTime : 0;
     setState('loading');
     try {
       const r = await api.calls.recording(call.id, call.recordingUrl);
       player.replace({ uri: r.url });
       player.setPlaybackRate(rate);
-      player.play();
+      await play();
       setExpiresAt(r.expiresAt);
       setState('ready');
     } catch (e) {
-      setError(e instanceof ApiError && e.code === 'offline' ? 'Recordings need a connection.' : 'Could not load the recording.');
+      resumeAt.current = 0;
+      // A timeout is code 'offline' too, but the agent is online: say it was slow and let them retry
+      const timedOut = e instanceof ApiError && e.reason === TIMED_OUT;
+      setError(
+        timedOut
+          ? 'Loading the recording took too long. Tap play to try again.'
+          : e instanceof ApiError && e.code === 'offline'
+            ? 'Recordings need a connection.'
+            : 'Could not load the recording.',
+      );
       setState('error');
+    } finally {
+      loading.current = false;
     }
   };
 
@@ -66,8 +129,8 @@ export function RecordingPlayer({ call }: { call: CallRecord }) {
     if (state === 'loading') return;
     if (state !== 'ready' || expired) return void load();
     if (status.playing) return player.pause();
-    if (status.didJustFinish || status.currentTime >= dur) void player.seekTo(0).then(() => player.play());
-    else player.play();
+    if (status.didJustFinish || status.currentTime >= dur) void player.seekTo(0).then(play);
+    else void play();
   };
 
   const seek = (sec: number) => {
@@ -78,7 +141,7 @@ export function RecordingPlayer({ call }: { call: CallRecord }) {
   return (
     <Card style={{ gap: 14 }}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
-        <Pressable
+        <Tappable
           accessibilityRole="button"
           accessibilityLabel={playing ? 'Pause recording' : 'Play recording'}
           onPress={toggle}
@@ -96,7 +159,7 @@ export function RecordingPlayer({ call }: { call: CallRecord }) {
           ) : (
             <Icon name={playing ? 'pause' : 'play-arrow'} size={30} color={c.onPrimary} />
           )}
-        </Pressable>
+        </Tappable>
         <View style={{ flex: 1 }}>
           <Pressable
             accessibilityRole="adjustable"

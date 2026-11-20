@@ -27,6 +27,11 @@ function confirmDiscard(it: OutboxItem) {
   });
 }
 
+/**
+ * Sync: when the app last refreshed from the server, and Sync now. Changes are no longer queued on the phone (each
+ * goes to the server once, straight away, and a failure is shown and undone there and then), so the list below
+ * only ever holds changes an older build saved and never sent, each with Retry and Discard.
+ */
 export default function Sync() {
   const { c } = useTheme();
   const insets = useSafeAreaInsets();
@@ -75,7 +80,7 @@ export default function Sync() {
             <EmptyState
               icon="cloud-done"
               title="Nothing waiting"
-              body="Dispositions, notes and tasks save on your phone first, then sync here."
+              body="Dispositions, notes and tasks go straight to the server. If one can't be saved, you'll see a message and the change is undone."
             />
           ) : (
             items.map((it, i) => (

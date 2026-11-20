@@ -5,7 +5,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { helpText } from '@/domain/helpText';
 import { useSipPhone } from '@/telephony/sip/sipPhone';
 import { feedback } from '@/feedback';
-import { usePermissions, usePermissionsStore, type PermissionKind, type PermissionState } from '@/hooks/usePermissions';
+import { micAllowsGoLive, usePermissions, usePermissionsStore, type PermissionKind, type PermissionState } from '@/hooks/usePermissions';
 import { useCampaigns } from '@/store/campaigns';
 import { syncCampaign, useSession } from '@/store/session';
 import { useSettings } from '@/store/settings';
@@ -185,8 +185,7 @@ export function Preflight({ mode, onDone }: { mode: 'golive' | 'diagnostics'; on
   const sip = useSipPhone();
   const sipFailed = sip.status === 'failed' || sip.status === 'disconnected';
   const { states, rerun, allPassed: checksPassed } = useChecks(mic);
-  // Browsers ask for the mic on first use, so the web build only warns instead of blocking Go live
-  const micReady = mic === 'granted' || mic === 'unsupported' || Platform.OS === 'web';
+  const micReady = micAllowsGoLive(mic);
   // The campaign comes from the server after login; going live needs it
   const campaignReady = !!agent?.campaignId;
   const campaignError = useCampaigns((x) => x.error);
@@ -225,7 +224,10 @@ export function Preflight({ mode, onDone }: { mode: 'golive' | 'diagnostics'; on
             </T>
             <T v="body" color={allPassed ? c.successFg : c.ink2} accessibilityLiveRegion="polite">
               {allPassed
-                ? 'Microphone allowed — you can go live. Some checks aren’t available yet.'
+                ? mic === 'granted' || Platform.OS !== 'web'
+                  ? 'Microphone allowed — you can go live. Some checks aren’t available yet.'
+                  : // The web doesn't block on the mic (micAllowsGoLive), so say so rather than claim it's allowed
+                    'You can go live. Allow the microphone below, or your browser will ask on your first call.'
                 : checksPassed && !micReady
                   ? 'Allow microphone access to go live.'
                   : sipFailed

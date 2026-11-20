@@ -1,5 +1,5 @@
 import { router, useLocalSearchParams } from 'expo-router';
-import { useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import { ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useDispositionLabel } from '@/components/CallCard';
@@ -8,7 +8,7 @@ import { ItemNotFound } from '@/components/ItemNotFound';
 import { PageHeader } from '@/components/PageHeader';
 import { PhoneText } from '@/components/PhoneText';
 import { Avatar, Button, Card, Divider, Icon, Pill, SectionHeader, StatusChip, T, type IconName } from '@/components/ui';
-import { formatRelative, formatWhen } from '@/domain/format';
+import { formatRelative, formatTime, formatWhen, snoozeMinutesTo, tomorrowAt } from '@/domain/format';
 import { useDial } from '@/hooks/useDial';
 import { useNow } from '@/hooks/useNow';
 import { useData } from '@/store/data';
@@ -45,6 +45,8 @@ export default function TaskPreview() {
   const dial = useDial();
   const dispositionLabel = useDispositionLabel();
   // Opened from a deep link there is nothing behind this screen; land on the list instead of a dead tap
+  // Latched so a double tap on Mark done or a snooze pill can't act twice or pop two screens
+  const leaving = useRef(false);
   const leave = () => (router.canGoBack() ? router.back() : router.replace('/callbacks'));
 
   const lastCall = useMemo(
@@ -124,20 +126,26 @@ export default function TaskPreview() {
           <View>
             <SectionHeader title="Snooze" />
             <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap' }}>
-              {[
-                ['15 min', 15],
-                ['1 hour', 60],
-                ['3 hours', 180],
-                ['Tomorrow', 24 * 60],
-              ].map(([label, m]) => (
+              {(
+                [
+                  ['15 min', 15],
+                  ['1 hour', 60],
+                  ['3 hours', 180],
+                  ['Tomorrow', null],
+                ] as const
+              ).map(([label, m]) => (
                 <Pill
                   key={label}
-                  label={String(label)}
+                  label={label}
                   icon="snooze"
                   onPress={() => {
+                    if (leaving.current) return;
+                    leaving.current = true;
                     const before = task;
-                    snoozeTask(task.id, Number(m));
-                    notify(`Snoozed ${label === 'Tomorrow' ? 'until tomorrow' : `for ${label}`}`, 'neutral', {
+                    // "Tomorrow" is 9:00 tomorrow, counted from today rather than from the due time
+                    const tomorrow = tomorrowAt(9);
+                    snoozeTask(task.id, m ?? snoozeMinutesTo(tomorrow, task.dueAt));
+                    notify(m === null ? `Snoozed until tomorrow, ${formatTime(tomorrow.toISOString())}` : `Snoozed for ${label}`, 'neutral', {
                       label: 'Undo',
                       onPress: () => useData.getState().upsertTask(before),
                     });
@@ -168,12 +176,19 @@ export default function TaskPreview() {
             variant="outline"
             style={{ flex: 1 }}
             onPress={() => {
+              if (leaving.current) return;
               const before = task;
-              completeTask(task.id);
-              if (!task.done) {
-                notify('Callback done', 'success', { label: 'Undo', onPress: () => useData.getState().upsertTask(before) });
-                leave();
+              // completeTask toggles, so read the live row: a second tap must not reopen what the first just closed
+              const live = useData.getState().tasks.find((t) => t.id === task.id);
+              if (!live) return;
+              if (task.done) {
+                if (live.done) completeTask(task.id);
+                return;
               }
+              leaving.current = true;
+              if (!live.done) completeTask(task.id);
+              notify('Callback done', 'success', { label: 'Undo', onPress: () => useData.getState().upsertTask(before) });
+              leave();
             }}
           />
           {!task.done && number && (

@@ -1,13 +1,17 @@
 import { router } from 'expo-router';
-import { Pressable, View } from 'react-native';
+import { View } from 'react-native';
 import { formatRelative, formatWhen } from '@/domain/format';
 import type { Task } from '@/domain/types';
+import { useDial } from '@/hooks/useDial';
 import { useNow } from '@/hooks/useNow';
 import { useData } from '@/store/data';
 import { useTheme } from '@/theme';
+import { contactById } from './contactMap';
+import { notify } from './feedback';
 import { SwipeRow } from './motion/SwipeRow';
 import { usePhoneDisplay } from './PhoneText';
 import { Icon, IconButton, StatusChip, T, tap, type IconName } from './ui';
+import { Tappable } from './motion/Tappable';
 
 const kindIcon: Record<Task['kind'], IconName> = {
   callback: 'phone-callback',
@@ -27,8 +31,9 @@ export function TaskRow({
   onSnooze?: () => void;
 }) {
   const { c } = useTheme();
+  // One shared 30 s tick for every row (useNow shares the interval), and an O(1) contact lookup
   const now = useNow(30000);
-  const contact = useData((s) => s.contacts.find((x) => x.id === task.contactId));
+  const contact = useData((s) => contactById(s.contacts, task.contactId));
   const phone = usePhoneDisplay();
   const overdue = !task.done && new Date(task.dueAt).getTime() < now;
   const slaLeft = task.slaDueAt ? new Date(task.slaDueAt).getTime() - now : null;
@@ -40,7 +45,7 @@ export function TaskRow({
       right={!task.done && onSnooze ? { icon: 'snooze', bg: c.purple, fg: c.onPurple, onTrigger: onSnooze } : undefined}
     >
       <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: c.surface, paddingRight: 10, gap: 4 }}>
-        <Pressable
+        <Tappable scaleTo={1}
           accessibilityRole="button"
           accessibilityLabel={`${task.title}, ${who}, due ${formatWhen(task.dueAt)}${overdue ? ', overdue' : ''}`}
           accessibilityActions={[
@@ -61,7 +66,7 @@ export function TaskRow({
             paddingRight: 4,
             paddingVertical: 12,
             minHeight: 72,
-            backgroundColor: pressed ? c.subtle : c.surface,
+            backgroundColor: pressed ? c.pressed : c.surface,
           })}
         >
           <View
@@ -100,7 +105,7 @@ export function TaskRow({
               )}
             </View>
           </View>
-        </Pressable>
+        </Tappable>
         {!task.done && onSnooze && <IconButton icon="snooze" label="Snooze 1 hour" variant="plain" size={44} onPress={onSnooze} />}
         {!task.done && onCall && (task.number || contact) && (
           <IconButton icon="call" label={`Call ${who}`} variant="filled" size={44} onPress={onCall} />
@@ -112,8 +117,19 @@ export function TaskRow({
 
 export function useTaskActions() {
   const snooze = useData((s) => s.snoozeTask);
+  const dial = useDial();
   return {
-    callTask: (t: Task) => router.push(`/task/${t.id}`),
+    // The green "Call" button dials, as its label says. Do-not-call contacts open the callback instead, which says why.
+    callTask: (t: Task) => {
+      const contact = contactById(useData.getState().contacts, t.contactId);
+      const number = contact?.phone ?? t.number;
+      if (contact?.dnc) {
+        notify(`${contact.name} is on the do-not-call list`, 'warning');
+        return router.push(`/task/${t.id}`);
+      }
+      if (!number) return router.push(`/task/${t.id}`);
+      void dial({ number, contactId: contact?.id ?? null, source: 'task', taskId: t.id });
+    },
     snooze: (t: Task, minutes = 60) => snooze(t.id, minutes),
   };
 }

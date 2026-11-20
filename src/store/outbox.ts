@@ -37,7 +37,11 @@ type OutboxState = {
   lastError: string | null;
   /** Backend: the last change the server turned down, for the toast (useSyncFailureToast), as the web shows it */
   failure: { at: number; title?: string; message: string } | null;
-  enqueue: (item: NewItem) => void;
+  /**
+   * Sends a change once, straight away. `onFail` runs when the server turns it down, so the caller can roll back
+   * its optimistic local change; `failureText` replaces the default toast text for it.
+   */
+  enqueue: (item: NewItem, opts?: { onFail?: (e: unknown) => void; failureText?: string }) => void;
   flush: () => Promise<void>;
   /** Put a parked item back in the queue and flush */
   retry: (key: string) => void;
@@ -60,23 +64,43 @@ async function send(item: OutboxItem) {
 }
 
 /**
- * Backend: what the web shows when the same change fails. A callback reschedule: the web's fallback (its own text is
- * the browser's "Request failed with status code …"). A status / break change and the rest: nothing, as on the web
- * (marking a callback done has no web equivalent).
+ * What the toast says when a change fails. A callback reschedule: the web's fallback (its own text is the browser's
+ * "Request failed with status code …"). The web shows nothing for the rest, but the change is rolled back here,
+ * so the agent is told rather than left wondering why it undid itself.
  */
-function webFailureText(item: OutboxItem): string | null {
-  if (item.kind === 'task' && !item.payload.done) return 'Failed to reschedule. Please try again.';
-  return null;
+function failureText(item: OutboxItem): string {
+  switch (item.kind) {
+    case 'task':
+      return item.payload.done ? "Couldn't mark the callback done. Please try again." : 'Failed to reschedule. Please try again.';
+    case 'contact':
+      return "Couldn't save the contact changes. Please try again.";
+    case 'status':
+      return "Couldn't change your status. Please try again.";
+  }
 }
 
-/** Ids of records that still have a queued local change; a server copy must not overwrite them */
+/** Records with a change on its way to the server (id → number of sends in flight) */
+const sending = new Map<string, number>();
+
+/** Ids of records with a change on its way to the server right now */
+export function inflightIds() {
+  return new Set(sending.keys());
+}
+
+/**
+ * Ids of records that still have a local change the server hasn't confirmed (queued, or being sent right now);
+ * a server copy must not overwrite them
+ */
 export function pendingIds(items: OutboxItem[]) {
-  const ids = new Set<string>();
+  const ids = inflightIds();
   items.forEach((i) => {
     if (i.kind !== 'status') ids.add(i.payload.id);
   });
   return ids;
 }
+
+/** Status changes go one at a time, so two quick picks reach the server in the order they were made */
+let statusChain: Promise<unknown> = Promise.resolve();
 
 let inflight: Promise<void> | null = null;
 
@@ -89,14 +113,28 @@ export const useOutbox = create<OutboxState>()(
         lastFlushAt: null,
         lastError: null,
         failure: null,
-        enqueue: (item) => {
+        enqueue: (item, opts) => {
           const full = { ...item, key: uid('idem'), attempts: 0, createdAt: new Date().toISOString() } as OutboxItem;
           // As the web, which has no queue: each change goes to the server once, straight away, and a failure is
-          // shown right then (or not at all, where the web shows nothing). No retries, so nothing is sent twice.
-          void send(full).catch(() => {
-            const message = webFailureText(full);
-            if (message) set({ failure: { at: Date.now(), message } });
-          });
+          // shown right then and rolled back by the caller. No retries, so nothing is sent twice.
+          const id = full.kind === 'status' ? null : full.payload.id;
+          if (id) sending.set(id, (sending.get(id) ?? 0) + 1);
+          let sent: Promise<unknown>;
+          if (full.kind === 'status') {
+            sent = statusChain.then(() => send(full));
+            statusChain = sent.catch(() => undefined);
+          } else sent = send(full);
+          void sent
+            .catch((e) => {
+              opts?.onFail?.(e);
+              set({ failure: { at: Date.now(), message: opts?.failureText ?? failureText(full) } });
+            })
+            .finally(() => {
+              if (!id) return;
+              const left = (sending.get(id) ?? 1) - 1;
+              if (left > 0) sending.set(id, left);
+              else sending.delete(id);
+            });
         },
         flush: () => {
           // Callers that await flush() (e.g. sync before merging) must wait for the run already in

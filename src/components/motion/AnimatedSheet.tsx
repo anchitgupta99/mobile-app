@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { KeyboardAvoidingView, Modal, Pressable, useWindowDimensions, View, type StyleProp, type ViewStyle } from 'react-native';
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
 import Animated, {
@@ -12,12 +12,15 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 import { feedback } from '@/feedback';
+import { useCall } from '@/telephony/callStore';
 import { useTheme } from '@/theme';
 import { animateTo, duration, easing } from '@/theme/motion';
 import { keyboardBehavior } from '../keyboard';
+import { ToastLayer, useFeedback } from '../feedback';
 
 const DISMISS = 120; // px dragged down
 const FLING = 900; // px/s downward velocity
+let nextSheetId = 1;
 
 export function AnimatedSheet({
   open,
@@ -46,6 +49,25 @@ export function AnimatedSheet({
   const shown = useSharedValue(open);
 
   const hide = () => setMounted(false);
+
+  // While mounted, this sheet's Modal covers the root toast host, so it takes over rendering toasts
+  const [sheetId] = useState(() => nextSheetId++);
+  useEffect(() => {
+    if (!mounted) return;
+    const { pushSheet, popSheet } = useFeedback.getState();
+    pushSheet(sheetId);
+    return () => popSheet(sheetId);
+  }, [mounted, sheetId]);
+
+  // A Modal stays above the incoming-call screen: close when a call arrives so it isn't missed behind the sheet
+  const inCall = useCall((s) => !!s.call);
+  const wasInCall = useRef(inCall);
+  useEffect(() => {
+    if (inCall && !wasInCall.current && open) onClose();
+    wasInCall.current = inCall;
+    // Only react to the call starting
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inCall]);
 
   const exit = () => {
     'worklet';
@@ -129,6 +151,7 @@ export function AnimatedSheet({
             {children}
           </Animated.View>
         </KeyboardAvoidingView>
+        <ToastLayer sheetId={sheetId} />
       </GestureHandlerRootView>
     </Modal>
   );

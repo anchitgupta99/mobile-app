@@ -24,6 +24,23 @@ export function startOfDay(d: Date): Date {
   return x;
 }
 
+/** `hour`:00 tomorrow, local time — the "Tomorrow" snooze lands here whatever the task's due time was */
+export function tomorrowAt(hour: number, now = new Date()): Date {
+  const d = startOfDay(now);
+  d.setDate(d.getDate() + 1);
+  d.setHours(hour);
+  return d;
+}
+
+/**
+ * Minutes to pass to `snoozeTask` so the task lands exactly on `target`. `snoozeTask` adds the minutes to the later of
+ * now and the due time, not to now, so a plain "24 h" would push an overdue-tomorrow task out a day too far.
+ */
+export function snoozeMinutesTo(target: Date, dueAt: string, now = Date.now()): number {
+  const base = Math.max(now, new Date(dueAt).getTime());
+  return (target.getTime() - base) / 60000;
+}
+
 export function formatTime(iso: string): string {
   return timeFmt.format(new Date(iso));
 }
@@ -65,12 +82,10 @@ export function digitsOnly(s: string): string {
   return s.replace(/[^\d+*#]/g, '');
 }
 
+/** Groups a complete number for display; anything else (partial, longer, with * or #) is shown as typed */
 export function formatDialed(s: string): string {
-  const d = s.replace(/\D/g, '');
-  if (s.startsWith('+91') && d.length > 2) {
-    const rest = d.slice(2);
-    return `+91 ${rest.slice(0, 5)}${rest.length > 5 ? ' ' + rest.slice(5, 10) : ''}`.trim();
-  }
-  if (d.length === 10) return `${d.slice(0, 5)} ${d.slice(5)}`;
+  const intl = /^\+91(\d{10})$/.exec(s);
+  if (intl) return `+91 ${intl[1].slice(0, 5)} ${intl[1].slice(5)}`;
+  if (/^\d{10}$/.test(s)) return `${s.slice(0, 5)} ${s.slice(5)}`;
   return s;
 }

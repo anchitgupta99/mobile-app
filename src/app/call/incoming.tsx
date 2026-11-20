@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { ActivityIndicator, ScrollView, View } from 'react-native';
+import { ActivityIndicator, BackHandler, ScrollView, View } from 'react-native';
 import Animated, {
   cancelAnimation,
   Easing,
@@ -103,6 +103,12 @@ export default function Incoming() {
     return () => cancelAnimation(pulse);
   }, [reduced, pulse]);
 
+  // Android Back does nothing here: popping the screen would only have the call routing push it straight back
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => true);
+    return () => sub.remove();
+  }, []);
+
   const ring = useAnimatedStyle(() => ({
     opacity: interpolate(pulse.get(), [0, 1], [0.9, 0]),
     transform: [{ scale: interpolate(pulse.get(), [0, 1], [1, 1.9]) }],
@@ -171,8 +177,12 @@ export default function Incoming() {
           disabled={!!call.accepting}
           busy={!!call.accepting}
           onPress={() => {
-            if (useCall.getState().call?.state === 'ringing') feedback('call.answered');
-            void answer();
+            const id = call.id;
+            // The success cue only once the server has put the customer through (a failed Accept keeps it ringing)
+            void answer().then(() => {
+              const cur = useCall.getState().call;
+              if (cur?.id === id && cur.state === 'connected') feedback('call.answered');
+            });
           }}
         />
       </View>

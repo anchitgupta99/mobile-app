@@ -187,6 +187,12 @@ function useCallRouting() {
   const inSession = useSession((s) => !!s.token && s.live && !s.locked);
   const segments = useSegments();
 
+  // A call that comes in while the idle lock is on (the webphone still takes it) lifts the lock, so its call
+  // screen shows: otherwise a predictive customer talks to nobody and an accept/reject call rings out unseen
+  useEffect(() => {
+    if (callId && useSession.getState().locked) useSession.getState().unlock();
+  }, [callId]);
+
   useEffect(() => {
     if (!inSession) return;
     const here = segments.join('/');

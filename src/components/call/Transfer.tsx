@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, TextInput, View } from 'react-native';
+import { ActivityIndicator, ScrollView, TextInput, View } from 'react-native';
 import Animated, { FadeIn, FadeInDown, FadeOut, LinearTransition } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { api, type BackendAgent } from '@/api/client';
@@ -11,8 +11,8 @@ import { font, useTheme } from '@/theme';
 import { duration } from '@/theme/motion';
 import { PressableScale } from '../motion/PressableScale';
 import { useCallParty } from '../PhoneText';
-import { Sheet } from '../Sheet';
 import { Avatar, Icon, T, tap, type IconName } from '../ui';
+import { Tappable } from '@/components/motion/Tappable';
 
 const pad: [string, string][] = [
   ['1', ''],
@@ -31,14 +31,6 @@ const pad: [string, string][] = [
 
 /** A colleague to transfer to or add: one of the server's signed-in agents */
 type Colleague = { id: string; name: string; team: string; ext: string; presence: 'available' | 'away' | 'busy' };
-
-const countries = [
-  { code: '+1', name: 'United States / Canada' },
-  { code: '+91', name: 'India' },
-  { code: '+44', name: 'United Kingdom' },
-  { code: '+61', name: 'Australia' },
-  { code: '+971', name: 'United Arab Emirates' },
-];
 
 function RoundButton({
   icon,
@@ -223,7 +215,7 @@ function InternalList({ kind, onPick }: { kind: Consult['kind']; onPick: (c: Col
           const blocked = a.presence !== 'available';
           return (
             <Animated.View key={a.id} entering={FadeIn.duration(duration.base)} layout={LinearTransition.duration(duration.base)}>
-              <Pressable
+              <Tappable scaleTo={1}
                 accessibilityRole="button"
                 accessibilityLabel={`${kind === 'transfer' ? 'Transfer to' : 'Add'} ${a.name}, ${a.team}, extension ${a.ext}, ${a.presence}`}
                 accessibilityState={{ disabled: blocked }}
@@ -237,7 +229,7 @@ function InternalList({ kind, onPick }: { kind: Consult['kind']; onPick: (c: Col
                   paddingVertical: 10,
                   paddingHorizontal: 8,
                   borderRadius: 12,
-                  backgroundColor: pressed ? c.callControl : 'transparent',
+                  backgroundColor: pressed ? c.callControlPressed : 'transparent',
                 })}
               >
                 <PresenceAvatar name={a.name} presence={a.presence} />
@@ -263,7 +255,7 @@ function InternalList({ kind, onPick }: { kind: Consult['kind']; onPick: (c: Col
                 >
                   <Icon name={kind === 'transfer' ? 'phone-forwarded' : 'person-add'} size={20} color={c.onCallControlActive} />
                 </View>
-              </Pressable>
+              </Tappable>
             </Animated.View>
           );
         })}
@@ -285,33 +277,11 @@ function InternalList({ kind, onPick }: { kind: Consult['kind']; onPick: (c: Col
 
 function ExternalPad({ onCall }: { onCall: (num: string) => void }) {
   const { c } = useTheme();
-  const [cc, setCc] = useState('+1');
   const [num, setNum] = useState('');
-  const [ccOpen, setCcOpen] = useState(false);
   const ok = num.replace(/\D/g, '').length >= 6;
   return (
     <View style={{ flex: 1, gap: 14 }}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={`Country code ${cc}. Change`}
-          onPress={() => setCcOpen(true)}
-          style={{
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: 4,
-            height: 52,
-            paddingHorizontal: 10,
-            borderRadius: 12,
-            backgroundColor: c.callControl,
-          }}
-        >
-          <Icon name="public" size={18} color={c.onCallScreen} />
-          <T v="bodyStrong" color={c.onCallScreen} nums>
-            {cc}
-          </T>
-          <Icon name="arrow-drop-down" size={20} color={c.onCallScreen} />
-        </Pressable>
         <View
           style={{
             flex: 1,
@@ -346,12 +316,12 @@ function ExternalPad({ onCall }: { onCall: (num: string) => void }) {
         </View>
         <RoundButton
           icon="call"
-          label={ok ? `Call ${cc} ${num}` : 'Call. Enter a number first'}
+          label={ok ? `Call ${num}` : 'Call. Enter a number first'}
           size={52}
           bg={c.purple}
           fg={c.onPurple}
           disabled={!ok}
-          onPress={() => onCall(`${cc} ${num}`)}
+          onPress={() => onCall(num)}
         />
       </View>
       <View
@@ -395,38 +365,6 @@ function ExternalPad({ onCall }: { onCall: (num: string) => void }) {
           </PressableScale>
         ))}
       </View>
-      <Sheet open={ccOpen} onClose={() => setCcOpen(false)} title="Country code" scroll={false}>
-        {countries.map((x) => (
-          <Pressable
-            key={x.code}
-            accessibilityRole="radio"
-            accessibilityState={{ checked: cc === x.code }}
-            onPress={() => {
-              tap();
-              setCc(x.code);
-              setCcOpen(false);
-            }}
-            style={{
-              minHeight: 52,
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 12,
-              paddingHorizontal: 14,
-              borderRadius: 12,
-              borderWidth: 1,
-              borderColor: cc === x.code ? c.purple : c.line,
-              backgroundColor: cc === x.code ? c.selected : c.surface,
-            }}
-          >
-            <T v="bodyStrong" nums style={{ width: 56 }}>
-              {x.code}
-            </T>
-            <T v="body" style={{ flex: 1 }}>
-              {x.name}
-            </T>
-          </Pressable>
-        ))}
-      </Sheet>
     </View>
   );
 }
@@ -449,7 +387,7 @@ export function TargetPicker({ kind, onBack, onMinimise }: { kind: Consult['kind
           {(['internal', 'external'] as const).map((t) => {
             const on = tab === t;
             return (
-              <Pressable
+              <Tappable
                 key={t}
                 accessibilityRole="radio"
                 accessibilityState={{ checked: on }}
@@ -469,7 +407,7 @@ export function TargetPicker({ kind, onBack, onMinimise }: { kind: Consult['kind
                 <T v="label" color={on ? c.onCallControlActive : c.onCallScreen}>
                   {t === 'internal' ? 'Internal' : 'External'}
                 </T>
-              </Pressable>
+              </Tappable>
             );
           })}
         </View>
@@ -489,8 +427,9 @@ export function TargetPicker({ kind, onBack, onMinimise }: { kind: Consult['kind
         ) : (
           <ExternalPad
             onCall={(n) => {
-              // The server dials through the campaign's gateway and prefix, so it takes the number without the country code
-              const dial = n.split(' ').slice(1).join('').replace(/\D/g, '');
+              // The server dials through the campaign's gateway and prefix, so it takes the number as typed, digits
+              // only (no country code picker: the campaign's prefix decides the country)
+              const dial = n.replace(/\D/g, '');
               start(kind, { id: `ext_${n}`, name: n, role: 'External', kind: 'external', dial });
               onBack();
             }}
@@ -534,6 +473,9 @@ export function ConsultView({ onMinimise }: { onMinimise: () => void }) {
   const transfer = consult.kind === 'transfer';
   const failed = consult.state === 'busy' || consult.state === 'no-answer' || consult.state === 'declined';
   const customer = party(call).name;
+  // The server's consult doesn't hold the customer: say whether they're on hold or can hear the agent
+  const held = call.state === 'held';
+  const customerState = held ? 'On hold' : 'Can hear you';
   const targetTime = consult.answeredAt ? formatDuration((now - consult.answeredAt) / 1000) : null;
 
   const targetStatus = failed ? (
@@ -542,7 +484,7 @@ export function ConsultView({ onMinimise }: { onMinimise: () => void }) {
       Call Failed
     </T>
   ) : targetTime ? (
-    <T v="label" color={c.signalOk} nums>
+    <T v="label" color={c.successFg} nums>
       {targetTime}
     </T>
   ) : (
@@ -560,9 +502,11 @@ export function ConsultView({ onMinimise }: { onMinimise: () => void }) {
             <T v="bodyStrong" color={c.onCallScreen} numberOfLines={1} style={{ flexShrink: 1 }}>
               {customer}
             </T>
-            <View style={{ paddingHorizontal: 8, height: 22, borderRadius: 11, backgroundColor: c.warningBg, justifyContent: 'center' }}>
-              <T v="caption" color={c.warningFg} style={{ fontFamily: font.semibold }}>
-                On hold
+            <View
+              style={{ paddingHorizontal: 8, height: 22, borderRadius: 11, backgroundColor: held ? c.warningBg : c.successBg, justifyContent: 'center' }}
+            >
+              <T v="caption" color={held ? c.warningFg : c.successFg} style={{ fontFamily: font.semibold }}>
+                {customerState}
               </T>
             </View>
           </View>
@@ -576,8 +520,8 @@ export function ConsultView({ onMinimise }: { onMinimise: () => void }) {
           name={customer}
           role="Customer"
           right={
-            <T v="label" color={c.signalWarn}>
-              On hold
+            <T v="label" color={held ? c.warningFg : c.successFg}>
+              {customerState}
             </T>
           }
         />

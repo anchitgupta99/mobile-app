@@ -1,4 +1,9 @@
 export class ApiError extends Error {
+  /**
+   * The main thing asked for went through, only a step after it failed (switched campaign, but couldn't go
+   * online): a screen can show it as done, with this error's message as a warning
+   */
+  partial?: boolean;
   constructor(
     public code: 'offline' | 'unauthorized' | 'validation' | 'server',
     message: string,

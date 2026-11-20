@@ -60,6 +60,11 @@ describe('progress and missing', () => {
   it('lists the missing required ones', () => {
     expect(missingRequired([name, email, city], entries).map((f) => f.key)).toEqual(['email']);
   });
+  it('with a lead, counts a value only once its save has gone through or is on its way', () => {
+    const typed = { name: entry({ value: 'Rahul', confirmed: true, save: 'failed' }), email: entry({ declined: true, save: 'saving' }) };
+    expect(missingRequired([name, email], typed, { saved: true }).map((f) => f.key)).toEqual(['name']);
+    expect(missingRequired([name, email], { ...typed, name: { ...typed.name, save: 'saved' } }, { saved: true })).toEqual([]);
+  });
 });
 
 describe('categoryOf', () => {

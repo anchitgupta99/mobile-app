@@ -1,13 +1,14 @@
 import { useMemo, useState } from 'react';
-import { Pressable, View } from 'react-native';
+import { View } from 'react-native';
 import Animated, { FadeIn, FadeOut, LinearTransition } from 'react-native-reanimated';
 import { allPaths, pathLabel, type DispositionPath } from '@/domain/dispositions';
 import type { Disposition } from '@/domain/types';
 import { feedback } from '@/feedback';
 import { font, tone as toneOf, useTheme } from '@/theme';
 import { duration } from '@/theme/motion';
-import { Sheet } from './Sheet';
+import { Sheet, useLastWhileOpen } from './Sheet';
 import { Divider, Field, Icon, T } from './ui';
+import { Tappable } from './motion/Tappable';
 
 // The web's level names (CallDispositionPanel), then "Sub-Disposition n" deeper down
 const levelLabels = ['Select Disposition', 'Select Sub-Disposition 1', 'Select Sub-Disposition 2'];
@@ -35,7 +36,7 @@ function SelectField({
       <T v="label" color={error ? c.errorFg : c.ink2} style={{ fontFamily: font.medium, paddingHorizontal: 4 }}>
         {label}
       </T>
-      <Pressable
+      <Tappable
         accessibilityRole="button"
         accessibilityLabel={`${label}, ${value ?? 'not selected'}`}
         accessibilityHint="Opens the list of options"
@@ -44,7 +45,7 @@ function SelectField({
           minHeight: 52,
           borderRadius: 8,
           borderWidth: 1,
-          borderColor: error ? c.errorFg : c.line,
+          borderColor: error ? c.errorFg : c.controlBorder,
           backgroundColor: pressed ? c.pressed : c.surface,
           flexDirection: 'row',
           alignItems: 'center',
@@ -57,7 +58,7 @@ function SelectField({
           {value ?? placeholder}
         </T>
         <Icon name="expand-more" size={22} color={c.ink2} />
-      </Pressable>
+      </Tappable>
       {!!error && (
         <T v="caption" color={c.errorFg}>
           {error}
@@ -89,7 +90,9 @@ export function DispositionPicker({
     () => [options, ...path.filter((d) => d.children?.length).map((d) => d.children!)],
     [options, path],
   );
-  const sheetOptions = useMemo(() => (openLevel >= 0 ? (levels[openLevel] ?? []) : []), [levels, openLevel]);
+  // The level the sheet shows: kept while it animates closed, so it doesn't flash "Nothing matches" on the way out
+  const shownLevel = useLastWhileOpen(openLevel, openLevel >= 0);
+  const sheetOptions = useMemo(() => (shownLevel >= 0 ? (levels[shownLevel] ?? []) : []), [levels, shownLevel]);
   const prefix = openLevel > 0 ? path.slice(0, openLevel) : [];
 
   const results = useMemo(() => {
@@ -136,7 +139,7 @@ export function DispositionPicker({
         );
       })}
 
-      <Sheet open={openLevel >= 0} onClose={() => setOpenLevel(-1)} title={openLevel > 0 ? path[openLevel - 1]?.label : 'Disposition'}>
+      <Sheet open={openLevel >= 0} onClose={() => setOpenLevel(-1)} title={shownLevel > 0 ? path[shownLevel - 1]?.label : 'Disposition'}>
         {sheetOptions.length > SEARCH_FROM || allPaths(sheetOptions).length > SEARCH_FROM ? (
           <Field label="Search" hideLabel icon="search" placeholder="Search" value={q} onChangeText={setQ} autoCorrect={false} />
         ) : null}
@@ -148,12 +151,12 @@ export function DispositionPicker({
           )}
           {results.map((p, i) => {
             const leaf = p[p.length - 1];
-            const on = p.every((d, j) => path[openLevel + j]?.code === d.code) && path.length === openLevel + p.length;
-            const root = openLevel === 0 ? p[0] : path[0];
+            const on = p.every((d, j) => path[shownLevel + j]?.code === d.code) && path.length === shownLevel + p.length;
+            const root = shownLevel === 0 ? p[0] : path[0];
             return (
               <View key={p.map((d) => d.code).join('/')}>
                 {i > 0 && <Divider />}
-                <Pressable
+                <Tappable scaleTo={1}
                   accessibilityRole="radio"
                   accessibilityState={{ checked: on }}
                   accessibilityLabel={pathLabel(p)}
@@ -179,7 +182,7 @@ export function DispositionPicker({
                     </T>
                   ) : null}
                   {on && <Icon name="check" size={18} color={c.purple} />}
-                </Pressable>
+                </Tappable>
               </View>
             );
           })}

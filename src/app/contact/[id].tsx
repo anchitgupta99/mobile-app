@@ -1,6 +1,6 @@
 import { router, useLocalSearchParams } from 'expo-router';
 import { useMemo, useState } from 'react';
-import { Linking, ScrollView, View } from 'react-native';
+import { Linking, Pressable, ScrollView, View } from 'react-native';
 import { notify } from '@/components/feedback';
 import { ItemNotFound } from '@/components/ItemNotFound';
 import { PageHeader } from '@/components/PageHeader';
@@ -24,28 +24,47 @@ const kindIcon: Record<TimelineEvent['kind'], IconName> = {
 
 type Filter = 'all' | TimelineEvent['kind'];
 
-/** `dimmed`: looks unavailable but stays tappable, so tapping says why (a call that can't start right now) */
+/**
+ * `dimmed`: looks unavailable but stays tappable, so tapping says why (a call that can't start right now).
+ * `disabled`: really off, and announced so; with `disabledReason`, a tap on it (and the screen reader hint) says why.
+ */
 function QuickAction({
   icon,
   label,
   onPress,
   disabled,
+  disabledReason,
   dimmed,
 }: {
   icon: IconName;
   label: string;
   onPress: () => void;
   disabled?: boolean;
+  disabledReason?: string;
   dimmed?: boolean;
 }) {
   const { c } = useTheme();
   return (
-    <View style={{ alignItems: 'center', gap: 6, flex: 1, opacity: disabled || dimmed ? 0.4 : 1 }}>
-      <IconButton icon={icon} label={label} variant="filled" size={52} onPress={disabled ? undefined : onPress} />
+    // A disabled IconButton doesn't take the touch, so it lands here and explains instead of doing nothing
+    <Pressable
+      accessible={false}
+      disabled={!disabled || !disabledReason}
+      onPress={() => notify(disabledReason ?? '', 'warning')}
+      style={{ alignItems: 'center', gap: 6, flex: 1, opacity: disabled || dimmed ? 0.4 : 1 }}
+    >
+      <IconButton
+        icon={icon}
+        label={label}
+        variant="filled"
+        size={52}
+        disabled={disabled}
+        hint={disabled ? disabledReason : undefined}
+        onPress={onPress}
+      />
       <T v="caption" color={c.ink}>
         {label}
       </T>
-    </View>
+    </Pressable>
   );
 }
 
@@ -104,6 +123,7 @@ export default function ContactScreen() {
               icon="call"
               label="Call"
               disabled={contact.dnc}
+              disabledReason={helpText.dnc.text}
               dimmed={!!dialBlock}
               onPress={() => void dial({ number: contact.phone, contactId: contact.id, source: 'contact' })}
             />

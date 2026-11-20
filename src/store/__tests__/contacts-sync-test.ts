@@ -70,3 +70,46 @@ describe('contacts sync', () => {
     expect(useData.getState().contacts).toHaveLength(0);
   });
 });
+
+describe('sync while one is running', () => {
+  it('runs once more after it, instead of dropping the later ask', async () => {
+    let finish!: () => void;
+    list.mockReturnValueOnce(new Promise((r) => (finish = () => r({ listStatus: 'assigned', items: [], cursor: null }))));
+    list.mockReturnValueOnce(ok([contact('b')]));
+    const first = useData.getState().sync();
+    const second = useData.getState().sync();
+    const third = useData.getState().sync();
+    finish();
+    expect(await first).toBe(true);
+    expect(await second).toBe(true);
+    await third;
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(useData.getState().contacts.map((c) => c.id)).toEqual(['b']);
+  });
+
+  it("doesn't apply dispositions fetched for a campaign switched away from meanwhile", async () => {
+    let finish!: () => void;
+    list.mockReturnValueOnce(new Promise((r) => (finish = () => r({ listStatus: 'assigned', items: [], cursor: null }))));
+    const config = api.dispositions.config as jest.Mock;
+    config.mockImplementationOnce((campaignId: string) =>
+      Promise.resolve({ campaignId, mandatory: true, acwSeconds: 30, dispositions: [] }),
+    );
+    useData.setState((s) => ({ dispositions: { ...s.dispositions, campaignId: 'old' } }));
+    const first = useData.getState().sync();
+    useData.setState((s) => ({ dispositions: { ...s.dispositions, campaignId: 'new' } }));
+    finish();
+    await first;
+    expect(useData.getState().dispositions.campaignId).toBe('new');
+  });
+
+  it('a sync cut short by a logout leaves the wiped store alone', async () => {
+    let fail!: () => void;
+    list.mockReturnValueOnce(new Promise((_, rej) => (fail = () => rej(new Error('Network down')))));
+    const first = useData.getState().sync();
+    useData.getState().wipe();
+    expect(useData.getState().refreshing).toBe(false);
+    fail();
+    await first;
+    expect(useData.getState().syncError).toBeNull();
+  });
+});

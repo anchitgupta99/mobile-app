@@ -1,7 +1,7 @@
 import * as Clipboard from 'expo-clipboard';
 import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, View } from 'react-native';
+import { ActivityIndicator, View } from 'react-native';
 import { api } from '@/api/client';
 import { formatDuration, formatWhen } from '@/domain/format';
 import { findCampaign } from '@/store/campaigns';
@@ -11,8 +11,10 @@ import { useData } from '@/store/data';
 import { useTheme } from '@/theme';
 import { alertDialog, notify } from './feedback';
 import { usePhoneDisplay } from './PhoneText';
-import { Sheet } from './Sheet';
+import { contactById } from './contactMap';
+import { Sheet, useLastWhileOpen } from './Sheet';
 import { Button, Divider, Icon, IconButton, T, tap, type IconName } from './ui';
+import { Tappable } from './motion/Tappable';
 
 /** Saved dispositions may be a code from an older sync; always show the readable path. */
 export function useDispositionLabel() {
@@ -72,7 +74,7 @@ export function CallCard({
   onPlay: () => void;
 }) {
   const { c } = useTheme();
-  const contact = useData((s) => s.contacts.find((x) => x.id === call.contactId));
+  const contact = useData((s) => contactById(s.contacts, call.contactId));
   const phone = usePhoneDisplay();
   const d = dirIcon(call);
   const talk = call.talkSec ?? (call.outcome === 'answered' ? call.durationSec : 0);
@@ -82,16 +84,27 @@ export function CallCard({
     label(call.disposition) ?? (call.outcome === 'missed' ? 'Missed' : call.outcome === 'answered' ? 'Not dispositioned' : 'No answer');
 
   return (
-    <View style={{ backgroundColor: c.surface, borderRadius: 16, borderWidth: 1, borderColor: c.line, padding: 14, gap: 12 }}>
+    <View
+      style={{ backgroundColor: c.surface, borderRadius: 16, borderWidth: 1, borderColor: c.line, boxShadow: c.cardShadow, padding: 14, gap: 12 }}
+    >
       {/* Only the header navigates, so the action buttons below aren't nested inside another button */}
-      <Pressable
+      <Tappable scaleTo={1}
         accessibilityRole="button"
         accessibilityLabel={`${callName(call, contact) || 'Unknown number'}, ${d.label}, ${formatWhen(call.startedAt)}, ${disposition}. Open call details`}
         onPress={() => {
           tap();
           router.push(`/call-detail/${call.id}`);
         }}
-        style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 12, opacity: pressed ? 0.6 : 1 })}
+        // A tint, not a fade (fading reads as disabled); the -6/+6 keeps the layout where it was
+        style={({ pressed }) => ({
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 12,
+          margin: -6,
+          padding: 6,
+          borderRadius: 10,
+          backgroundColor: pressed ? c.pressed : 'transparent',
+        })}
       >
         <View
           style={{
@@ -121,7 +134,7 @@ export function CallCard({
           </T>
         </View>
         <Icon name="chevron-right" color={c.ink3} />
-      </Pressable>
+      </Tappable>
 
       <View style={{ gap: 6 }}>
         <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
@@ -150,7 +163,7 @@ export function CallCard({
           label="Disposition"
           value={disposition}
           right={
-            <Pressable
+            <Tappable
               accessibilityRole="button"
               accessibilityLabel="Disposition details"
               // 16dp icon + 16 on each side = a 48dp target
@@ -166,7 +179,7 @@ export function CallCard({
               }
             >
               <Icon name="info-outline" size={16} color={c.ink2} />
-            </Pressable>
+            </Tappable>
           }
         />
       </View>
@@ -209,8 +222,10 @@ function leadEntries(data: Record<string, unknown> | null, callUuid: string | un
 }
 
 /** Read-only lead details for a call; every value can be copied. */
-export function LeadSheet({ call, onClose }: { call: CallRecord | null; onClose: () => void }) {
+export function LeadSheet({ call: open, onClose }: { call: CallRecord | null; onClose: () => void }) {
   const { c } = useTheme();
+  // Keeps showing the last call while the sheet animates closed
+  const call = useLastWhileOpen(open, !!open);
 
   // The lead from the server, loaded when the sheet opens (null while loading)
   const [loaded, setLoaded] = useState<{ callId: string; rows: [string, string][] } | null>(null);
@@ -242,7 +257,7 @@ export function LeadSheet({ call, onClose }: { call: CallRecord | null; onClose:
 
   return (
     <Sheet
-      open={!!call}
+      open={!!open}
       onClose={onClose}
       title="Lead details"
       footer={

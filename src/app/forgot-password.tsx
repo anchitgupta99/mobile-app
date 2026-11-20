@@ -1,6 +1,6 @@
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { KeyboardAvoidingView, Linking, Pressable, ScrollView, TextInput, View } from 'react-native';
+import { AppState, KeyboardAvoidingView, Linking, Pressable, ScrollView, TextInput, View } from 'react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { ApiError, api, type PasswordRules } from '@/api/client';
 import { webText } from '@/api/errors';
@@ -10,6 +10,7 @@ import { PageHeader } from '@/components/PageHeader';
 import { Button, Field, Icon, IconButton, T } from '@/components/ui';
 import { font, useTheme } from '@/theme';
 import { duration } from '@/theme/motion';
+import { Tappable } from '@/components/motion/Tappable';
 
 /**
  * Forgot password, step for step and word for word the web's (pages/auth/ForgotPassword.tsx): email or username,
@@ -61,13 +62,38 @@ function serverBody(e: unknown): { code?: string; error?: string; resendIn?: unk
   return body && typeof body === 'object' ? (body as { code?: string; error?: string; resendIn?: unknown }) : {};
 }
 
+/**
+ * The server's rules checked field by field: anything missing or of the wrong type takes the fallback's value, so
+ * rules without a usable minLength can't ask for a password no one can type
+ */
+function checkedRules(raw: unknown): PasswordRules {
+  if (!raw || typeof raw !== 'object') return FALLBACK_RULES;
+  const r = raw as Partial<Record<keyof PasswordRules, unknown>>;
+  const flag = (v: unknown, d: boolean) => (typeof v === 'boolean' ? v : d);
+  const count = (v: unknown, d: number) => (typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : d);
+  return {
+    minLength: typeof r.minLength === 'number' && Number.isInteger(r.minLength) && r.minLength > 0 ? r.minLength : FALLBACK_RULES.minLength,
+    uppercase: flag(r.uppercase, FALLBACK_RULES.uppercase),
+    lowercase: flag(r.lowercase, FALLBACK_RULES.lowercase),
+    number: flag(r.number, FALLBACK_RULES.number),
+    symbol: flag(r.symbol, FALLBACK_RULES.symbol),
+    historyDepth: count(r.historyDepth, FALLBACK_RULES.historyDepth),
+  };
+}
+
+/** The `rules` route param the login passes on (JSON) */
 function parseRules(raw?: string): PasswordRules | null {
   if (!raw) return null;
   try {
-    return JSON.parse(raw) as PasswordRules;
+    return checkedRules(JSON.parse(raw));
   } catch {
     return null;
   }
+}
+
+/** Back to the login screen this was opened from, rather than a second one on top of it */
+function backToLogin() {
+  router.dismissTo('/login');
 }
 
 export default function ForgotPassword() {
@@ -97,6 +123,10 @@ export default function ForgotPassword() {
   const [submitConfirmError, setSubmitConfirmError] = useState('');
   const [inactiveMessage, setInactiveMessage] = useState('');
   const [resendIn, setResendIn] = useState(0);
+  // When a new code may be requested (ms); the countdown is worked out from it, so time away still counts
+  const resendAt = useRef(0);
+  // A step's request is on its way: a second Send / Next (keyboard Go, double tap) is ignored until it ends
+  const busy = useRef(false);
   const otpRef = useRef<TextInput>(null);
   const confirmRef = useRef<TextInput>(null);
 
@@ -107,15 +137,27 @@ export default function ForgotPassword() {
   // The web shows "Passwords do not match" once the confirm field has been left with a different password
   const confirmError = submitConfirmError || (confirmTouched && confirmPassword && confirmPassword !== newPassword ? 'Passwords do not match' : '');
 
+  const startResendCountdown = (seconds: number) => {
+    resendAt.current = Date.now() + seconds * 1000;
+    setResendIn(Math.max(0, seconds));
+  };
+
+  // Timers pause while the phone is in the agent's email app, so each tick (and coming back) reads the clock
+  const counting = resendIn > 0;
   useEffect(() => {
-    if (resendIn <= 0) return;
-    const t = setTimeout(() => setResendIn((s) => s - 1), 1000);
-    return () => clearTimeout(t);
-  }, [resendIn]);
+    if (!counting) return;
+    const tick = () => setResendIn(Math.max(0, Math.ceil((resendAt.current - Date.now()) / 1000)));
+    const t = setInterval(tick, 1000);
+    const sub = AppState.addEventListener('change', (s) => s === 'active' && tick());
+    return () => {
+      clearInterval(t);
+      sub.remove();
+    };
+  }, [counting]);
 
   useEffect(() => {
     if (step !== 'success') return;
-    const t = setTimeout(() => router.replace('/login'), REDIRECT_DELAY_MS);
+    const t = setTimeout(backToLogin, REDIRECT_DELAY_MS);
     return () => clearTimeout(t);
   }, [step]);
 
@@ -130,6 +172,8 @@ export default function ForgotPassword() {
       setEmailError('Please enter your email or username.');
       return;
     }
+    if (busy.current) return;
+    busy.current = true;
     setLoading(true);
     setEmailError('');
     setCodeError('');
@@ -137,7 +181,7 @@ export default function ForgotPassword() {
     try {
       const data = await api.auth.requestPasswordReset(trimmed);
       setMaskedEmail(data.maskedEmail);
-      setResendIn(Number(data.resendIn) || 0);
+      startResendCountdown(Number(data.resendIn) || 0);
       setOtp('');
       setStep('code');
       if (isResend) {
@@ -148,11 +192,12 @@ export default function ForgotPassword() {
       const data = serverBody(e);
       if (data.code === 'USER_INACTIVE') return showInactive(data.error);
       const retry = Number(data.resendIn);
-      if (retry > 0) setResendIn(retry);
+      if (retry > 0) startResendCountdown(retry);
       const msg = errorText(e, 'Could not send the code. Please try again.');
       if (isResend) setCodeError(msg);
       else setEmailError(msg);
     } finally {
+      busy.current = false;
       setLoading(false);
     }
   };
@@ -162,24 +207,29 @@ export default function ForgotPassword() {
       setCodeError(`Please enter the ${OTP_LENGTH}-digit code.`);
       return;
     }
+    if (busy.current) return;
+    busy.current = true;
     setLoading(true);
     setCodeError('');
     setCodeInfo('');
     try {
       const data = await api.auth.verifyResetCode(identifier.trim(), otp);
       setResetToken(data.resetToken);
-      setRules(data.rules ?? FALLBACK_RULES);
+      setRules(checkedRules(data.rules));
       setStep('password');
     } catch (e) {
       setCodeError(errorText(e, 'Verification failed. Please try again.'));
       setOtp('');
       otpRef.current?.focus();
     } finally {
+      busy.current = false;
       setLoading(false);
     }
   };
 
   const savePassword = async () => {
+    // Already saving: a second Go would only get "session expired" once the first has reset the password
+    if (busy.current) return;
     setConfirmTouched(true);
     if (!passwordValid) {
       setPasswordError('Password does not meet all the requirements');
@@ -189,6 +239,7 @@ export default function ForgotPassword() {
       setSubmitConfirmError('Passwords do not match');
       return;
     }
+    busy.current = true;
     setLoading(true);
     setPasswordError('');
     try {
@@ -212,6 +263,7 @@ export default function ForgotPassword() {
       if (data.code === 'PASSWORD_REUSED') setReusedPassword(newPassword);
       setPasswordError(errorText(e, 'Could not update password. Please try again.'));
     } finally {
+      busy.current = false;
       setLoading(false);
     }
   };
@@ -292,7 +344,7 @@ export default function ForgotPassword() {
                           height: 56,
                           borderRadius: 12,
                           borderWidth: 2,
-                          borderColor: codeError ? c.errorFg : digit ? c.purple : c.line,
+                          borderColor: codeError ? c.errorFg : digit ? c.purple : c.controlBorder,
                           backgroundColor: c.surface,
                           alignItems: 'center',
                           justifyContent: 'center',
@@ -350,7 +402,7 @@ export default function ForgotPassword() {
                     s
                   </T>
                 ) : (
-                  <Pressable
+                  <Tappable
                     accessibilityRole="button"
                     accessibilityState={{ disabled: loading }}
                     disabled={loading}
@@ -361,7 +413,7 @@ export default function ForgotPassword() {
                     <T v="label" color={c.purple} style={{ textDecorationLine: 'underline' }}>
                       Request a new code
                     </T>
-                  </Pressable>
+                  </Tappable>
                 )}
               </View>
               <Button label={loading ? 'Verifying...' : 'Next'} size="lg" full loading={loading} disabled={loading} onPress={() => void verifyCode()} />
@@ -458,7 +510,7 @@ export default function ForgotPassword() {
               <T v="h2" style={{ textAlign: 'center' }} accessibilityRole="header">
                 User is inactive.
               </T>
-              <Button label="Back to Login" size="lg" full style={{ marginTop: 24 }} onPress={() => router.replace('/login')} />
+              <Button label="Back to Login" size="lg" full style={{ marginTop: 24 }} onPress={backToLogin} />
               <T v="body" color={c.ink2} style={{ textAlign: 'center' }}>
                 {inactiveMessage}
               </T>

@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { RefreshControl, ScrollView, View } from 'react-native';
 import { notify } from '@/components/feedback';
 import { Dashboard } from '@/components/Dashboard';
@@ -21,7 +21,13 @@ export default function Home() {
   const { c } = useTheme();
   const agent = useSession((s) => s.agent);
   const tasks = useData((s) => s.tasks);
-  const { refreshing, onRefresh } = useRefresh();
+  const { refreshing, onRefresh: refreshData } = useRefresh();
+  // Pull-to-refresh also refetches the dashboard numbers, which don't come from the data sync
+  const [statsKey, setStatsKey] = useState(0);
+  const onRefresh = () => {
+    setStatsKey((n) => n + 1);
+    refreshData();
+  };
   const pending = useOutbox((s) => s.items.length);
   const { callTask, snooze } = useTaskActions();
 
@@ -62,7 +68,7 @@ export default function Home() {
         </Card>
       )}
 
-      <Dashboard />
+      <Dashboard refreshKey={statsKey} />
 
       <View>
         <SectionHeader title="Next callbacks" action="See all" onAction={() => router.push('/callbacks')} />
