@@ -5,8 +5,12 @@ import { PressableScale } from '@/components/motion/PressableScale';
 import { Icon, T, tap } from '@/components/ui';
 import { formatDialed } from '@/domain/format';
 import { feedback } from '@/feedback';
+import { useStatusSheet } from '@/components/StatusSheet';
+import { STATUS_DISPLAY } from '@/domain/agentStatus';
+import type { DialBlock } from '@/domain/dialGate';
+import { useDialAvailability } from '@/hooks/useDial';
 import { useDialpad } from '@/store/dialpad';
-import { font, useTheme } from '@/theme';
+import { font, tone as toneOf, useTheme } from '@/theme';
 import { animateTo } from '@/theme/motion';
 
 const keys: [string, string][] = [
@@ -28,6 +32,78 @@ const keys: [string, string][] = [
 const KEY_MAX = 76;
 const KEY_MIN = 54;
 const DISPLAY_MIN = 112;
+/** Room the status chip / banner takes above the number */
+const HINT_H = 56;
+
+/** The status chip (not online) or a banner (manual dialing off, no campaign, wrap-up) above the dial pad */
+function DialHint({ block }: { block: DialBlock }) {
+  const { c } = useTheme();
+  if (block.reason === 'on_call') return null;
+  if (block.reason === 'status') {
+    const d = STATUS_DISPLAY[block.status];
+    const t = toneOf(c, d.tone);
+    return (
+      <View style={{ alignItems: 'center', paddingTop: 8 }}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Status: ${block.label}. You can't make calls until you go online. Change status`}
+          onPress={() => {
+            tap();
+            useStatusSheet.getState().show();
+          }}
+          style={({ pressed }) => ({
+            minHeight: 44,
+            paddingHorizontal: 14,
+            borderRadius: 22,
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 8,
+            borderWidth: 1,
+            borderColor: t.line,
+            backgroundColor: pressed ? c.pressed : t.bg,
+          })}
+        >
+          <Icon name={d.icon} size={18} color={t.fg} />
+          <T v="label" color={c.ink}>
+            {block.label} · Go online to call
+          </T>
+          <Icon name="expand-more" size={18} color={c.ink2} />
+        </Pressable>
+      </View>
+    );
+  }
+  const text =
+    block.reason === 'manual_not_allowed'
+      ? `Manual dialing is off for ${block.campaignName}`
+      : block.reason === 'wrap_up'
+        ? 'Finish wrap-up to make the next call'
+        : 'Pick a campaign to start calling';
+  const t = toneOf(c, 'warning');
+  return (
+    <View
+      accessibilityRole="alert"
+      style={{
+        marginHorizontal: 16,
+        marginTop: 8,
+        minHeight: 44,
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        borderRadius: 12,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        borderWidth: 1,
+        borderColor: t.line,
+        backgroundColor: t.bg,
+      }}
+    >
+      <Icon name={block.reason === 'manual_not_allowed' ? 'phone-disabled' : 'info'} size={18} color={t.fg} />
+      <T v="label" color={c.ink} style={{ flex: 1 }}>
+        {text}
+      </T>
+    </View>
+  );
+}
 
 function Key({
   d,
@@ -72,7 +148,7 @@ function Key({
       >
         {d}
       </T>
-      <T v="overline" maxFontSizeMultiplier={1.15} color={c.ink3} style={{ fontSize: 9, lineHeight: 11, minHeight: 11 }}>
+      <T v="overline" maxFontSizeMultiplier={1.15} color={c.ink2} style={{ lineHeight: 14, minHeight: 14, letterSpacing: 0.4 }}>
         {sub}
       </T>
     </PressableScale>
@@ -100,7 +176,8 @@ export default function Dialer() {
 
   // 4 digit rows; the call button lives in the tab bar
   const rows = 4 + 3 * 0.2;
-  const keypadBudget = rootH ? rootH - DISPLAY_MIN - 16 : Infinity;
+  const block = useDialAvailability('keypad');
+  const keypadBudget = rootH ? rootH - DISPLAY_MIN - 16 - (block ? HINT_H : 0) : Infinity;
   const key = Math.max(KEY_MIN, Math.min(KEY_MAX, Math.floor(keypadBudget / rows)));
   const rowGap = Math.round(key * 0.2);
   const colGap = Math.round(key * 0.3);
@@ -108,6 +185,8 @@ export default function Dialer() {
 
   return (
     <View style={{ flex: 1 }} onLayout={(e) => setRootH(e.nativeEvent.layout.height)}>
+      {/* Why a call wouldn't go through, before the agent tries. Typing still works; only the call is blocked. */}
+      {block && <DialHint block={block} />}
       <View style={{ flex: 1, minHeight: DISPLAY_MIN, alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: 24 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', alignSelf: 'stretch', gap: 8 }}>
           <View style={{ width: 48 }} />
@@ -117,7 +196,8 @@ export default function Dialer() {
               numberOfLines={1}
               adjustsFontSizeToFit
               nums
-              style={{ fontFamily: font.regular, fontSize: 36, lineHeight: 46, minHeight: 46, textAlign: 'center' }}
+              v="display"
+              style={{ fontFamily: font.regular, minHeight: 38, textAlign: 'center' }}
               color={num ? c.inkStrong : c.inkPlaceholder}
             >
               {num ? formatDialed(num) : 'Enter number'}

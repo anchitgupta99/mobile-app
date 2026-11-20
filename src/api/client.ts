@@ -2,9 +2,11 @@ import type {
   Agent,
   AgentStatus,
   CallRecord,
+  CaptureField,
   Campaign,
   Contact,
   Disposition,
+  DispositionCategory,
   DispositionConfig,
   DispositionField,
   DispositionPayload,
@@ -19,7 +21,7 @@ import { findPhoneMaskRule, type PhoneMaskRule } from '@/domain/phoneMask';
 // The Contacts tab's sample data: the only part of the app not on the server yet
 import { buildSeed } from '@/mocks/seed';
 import { ApiError } from './errors';
-import { mobileRequest } from './http';
+import { DEMO, mobileRequest } from './http';
 
 export { ApiError };
 
@@ -105,7 +107,11 @@ type BackendDisposition = {
   dnc_enabled: boolean | null;
   additional_notes_enabled: boolean | null;
   additional_notes_required: boolean | null;
+  /** Proposed: connected / not_connected / dnc / callback, so only connected outcomes need the required details */
+  category?: string | null;
 };
+
+const CATEGORIES = new Set<DispositionCategory>(['connected', 'not_connected', 'dnc', 'callback']);
 
 /** The template's switches as the web reads them (readPreferences): nullable, and on when unknown */
 function toPrefs(rows: BackendDisposition[]): DispositionPrefs {
@@ -147,6 +153,7 @@ function toDispositionTree(rows: BackendDisposition[]): Disposition[] {
           subRequired: r.sub_disposition_required ?? true,
           requiresCallback: r.requires_callback ?? false,
           doNotCall: r.is_do_not_call ?? false,
+          ...(CATEGORIES.has(r.category as DispositionCategory) && { category: r.category as DispositionCategory }),
           ...(children.length && { children }),
         };
       });
@@ -216,7 +223,46 @@ type BackendCallContext = {
   prefix?: string | null;
   groups?: { fields?: { field_key?: string; field_type?: string; validation_rules?: unknown }[] | null }[];
   values?: Record<string, unknown>;
+  /** Proposed: the campaign's "Required details" set up in the admin app (see docs/UX_CHANGES_PLAN.md §2.2) */
+  capture_fields?: BackendCaptureField[] | null;
 };
+
+/** One required detail as the server sends it */
+type BackendCaptureField = {
+  key: string;
+  label?: string | null;
+  type?: string | null;
+  required?: boolean | null;
+  order?: number | null;
+  prompt?: string | null;
+  options?: string[] | null;
+  allow_declined?: boolean | null;
+};
+
+const CAPTURE_TYPES = new Set<CaptureField['type']>(['text', 'email', 'phone', 'dropdown', 'date']);
+
+function toCaptureFields(rows: BackendCaptureField[] | null | undefined): CaptureField[] {
+  return (rows ?? [])
+    .filter((r) => !!r?.key)
+    .map((r, i) => ({
+      key: r.key,
+      label: r.label?.trim() || r.key,
+      type: CAPTURE_TYPES.has(r.type as CaptureField['type']) ? (r.type as CaptureField['type']) : 'text',
+      required: r.required === true,
+      order: r.order ?? i,
+      prompt: r.prompt?.trim() || undefined,
+      options: r.options ?? undefined,
+      allowDeclined: r.allow_declined !== false,
+    }))
+    .sort((a, b) => a.order - b.order);
+}
+
+/** A lead's values as text, for prefilling the required details */
+function toValues(values: Record<string, unknown> | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(values ?? {})) if (v != null && typeof v !== 'object') out[k] = String(v);
+  return out;
+}
 
 /** What the app keeps of a call's context */
 export type CallContext = {
@@ -230,6 +276,10 @@ export type CallContext = {
   /** The lead's name as the server shows it (masked when the template masks it); empty without a lead */
   name: string;
   maskRule: PhoneMaskRule | null;
+  /** The campaign's required details, in order (empty when the campaign has none) */
+  captureFields: CaptureField[];
+  /** The lead's current values, to prefill them */
+  values: Record<string, string>;
 };
 
 /** How many days of history the Calls tab loads (the web pages through the same list) */
@@ -484,17 +534,6 @@ export const api = {
       }
       return { items, defaultId: res.default_campaign_id, allowSelection: res.allow_campaign_selection !== false };
     },
-    /**
-     * A campaign's call script, as the web's call page reads it (GET /api/tenant/campaigns/:id): shown only when the
-     * admin turned it on (script_enabled), with its text (script_text)
-     */
-    async script(campaignId: string): Promise<{ enabled: boolean; text: string }> {
-      const res = await mobileRequest<{ campaign?: { script_enabled?: boolean | null; script_text?: string | null } }>(
-        'GET',
-        `/campaigns/${encodeURIComponent(campaignId)}`,
-      );
-      return { enabled: res.campaign?.script_enabled === true, text: res.campaign?.script_text || '' };
-    },
     /** Makes it the agent's active campaign on the server, which puts them on pause until they go online */
     async select(campaignId: string, opts: { oldCampaignId?: string; initial?: boolean } = {}) {
       await mobileRequest('POST', '/campaign', {
@@ -604,6 +643,8 @@ export const api = {
         prefix: res.prefix ?? null,
         name: typeof name === 'string' ? name.trim() : '',
         maskRule: findPhoneMaskRule(res.groups),
+        captureFields: toCaptureFields(res.capture_fields),
+        values: toValues(res.values),
       };
     },
     /** The webphone's call is over: the server moves the agent to the disposition step */
@@ -713,6 +754,13 @@ export const api = {
 
   /** A lead's fields for the call history's "Lead details", as the web's "View Lead Profile" loads them */
   leads: {
+    /**
+     * Proposed (docs/UX_CHANGES_PLAN.md §2.2): saves required details as the agent captures them, one field at a
+     * time, so nothing is lost if the call drops. `declined` lists the fields the customer wouldn't share.
+     */
+    async saveFields(leadId: string, body: { callUuid: string | null; values: Record<string, string | null>; declined: string[] }) {
+      await mobileRequest('PATCH', `/leads/${encodeURIComponent(leadId)}/fields`, body);
+    },
     async details(leadId: string): Promise<Record<string, unknown> | null> {
       const res = await mobileRequest<{ success?: boolean; data?: Record<string, unknown> | null }>(
         'GET',
@@ -780,8 +828,28 @@ export const api = {
   },
 
   contacts: {
-    list(updatedSince?: string) {
-      return request(() => ({ items: since(db.contacts, updatedSince), cursor: now() }));
+    /**
+     * Sample data for now. The backend will serve the agent's leads per campaign as
+     * GET /v1/api/agent/mobile/leads?campaignId=… → { listStatus, listName?, leads } (docs/UX_CHANGES_PLAN.md §5.1).
+     */
+    async list(
+      updatedSince?: string,
+      campaignId?: string,
+    ): Promise<{ listStatus: 'assigned' | 'none' | 'exhausted'; listName?: string; items: Contact[]; cursor: string }> {
+      // Demo mode answers it per campaign, so each empty state can be seen (api/demo.ts)
+      if (DEMO) {
+        const res = await mobileRequest<{ listStatus: 'assigned' | 'none' | 'exhausted'; listName?: string; leads: Contact[] }>(
+          'GET',
+          `/leads?campaignId=${encodeURIComponent(campaignId ?? '')}`,
+        );
+        return { listStatus: res.listStatus, listName: res.listName, items: res.leads, cursor: now() };
+      }
+      return request(() => ({
+        listStatus: 'assigned' as const,
+        listName: 'Sample leads',
+        items: since(db.contacts, updatedSince),
+        cursor: now(),
+      }));
     },
     timeline(contactId: string): Promise<TimelineEvent[]> {
       return request(() => db.timeline.filter((t) => t.contactId === contactId));

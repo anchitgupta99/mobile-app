@@ -8,7 +8,7 @@ import { PhoneText } from '@/components/PhoneText';
 import { Avatar, Button, Card, Icon, IconButton, Pill, SectionHeader, StatusChip, T, type IconName } from '@/components/ui';
 import { formatWhen } from '@/domain/format';
 import type { TimelineEvent } from '@/domain/types';
-import { useDial } from '@/hooks/useDial';
+import { useDial, useDialAvailability } from '@/hooks/useDial';
 import { useSecureScreen } from '@/hooks/useSecureScreen';
 import { useData } from '@/store/data';
 import { useTheme } from '@/theme';
@@ -24,10 +24,23 @@ const kindIcon: Record<TimelineEvent['kind'], IconName> = {
 
 type Filter = 'all' | TimelineEvent['kind'];
 
-function QuickAction({ icon, label, onPress, disabled }: { icon: IconName; label: string; onPress: () => void; disabled?: boolean }) {
+/** `dimmed`: looks unavailable but stays tappable, so tapping says why (a call that can't start right now) */
+function QuickAction({
+  icon,
+  label,
+  onPress,
+  disabled,
+  dimmed,
+}: {
+  icon: IconName;
+  label: string;
+  onPress: () => void;
+  disabled?: boolean;
+  dimmed?: boolean;
+}) {
   const { c } = useTheme();
   return (
-    <View style={{ alignItems: 'center', gap: 6, flex: 1, opacity: disabled ? 0.4 : 1 }}>
+    <View style={{ alignItems: 'center', gap: 6, flex: 1, opacity: disabled || dimmed ? 0.4 : 1 }}>
       <IconButton icon={icon} label={label} variant="filled" size={52} onPress={disabled ? undefined : onPress} />
       <T v="caption" color={c.ink}>
         {label}
@@ -44,6 +57,7 @@ export default function ContactScreen() {
   const timeline = useData((s) => s.timeline);
   const tasks = useData((s) => s.tasks);
   const dial = useDial();
+  const dialBlock = useDialAvailability('contact');
   const [filter, setFilter] = useState<Filter>('all');
 
   const events = useMemo(
@@ -90,12 +104,8 @@ export default function ContactScreen() {
               icon="call"
               label="Call"
               disabled={contact.dnc}
+              dimmed={!!dialBlock}
               onPress={() => void dial({ number: contact.phone, contactId: contact.id, source: 'contact' })}
-            />
-            <QuickAction
-              icon="alarm-add"
-              label="Callback"
-              onPress={() => router.push({ pathname: '/task/new', params: { contactId: contact.id } })}
             />
             <QuickAction
               icon="mail-outline"

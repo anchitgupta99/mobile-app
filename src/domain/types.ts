@@ -142,6 +142,36 @@ export type Disposition = {
   requiresCallback?: boolean;
   /** Backend: a do-not-call outcome (is_do_not_call); the server adds the number to DNC itself */
   doNotCall?: boolean;
+  /**
+   * Backend: what kind of outcome it is. Only "connected" outcomes need the call's required details; no answer,
+   * wrong number, busy and DNC don't, so agents never have to make data up to get past them. Sub-dispositions
+   * inherit their parent's when unset.
+   */
+  category?: DispositionCategory;
+};
+
+export type DispositionCategory = 'connected' | 'not_connected' | 'dnc' | 'callback';
+
+/** The kinds of input a required detail can take */
+export type CaptureFieldType = 'text' | 'email' | 'phone' | 'dropdown' | 'date';
+
+/**
+ * One detail the admin wants captured on every call in a campaign ("Required details"): set per campaign in the
+ * admin app, sent with the call's context, shown to the agent in the call screen's details panel.
+ */
+export type CaptureField = {
+  /** The CRM field it's saved to, e.g. "email_id" */
+  key: string;
+  label: string;
+  type: CaptureFieldType;
+  required: boolean;
+  order: number;
+  /** What the agent is told to ask, e.g. "Ask for their email ID" */
+  prompt?: string;
+  /** For dropdowns */
+  options?: string[];
+  /** Offer "Customer declined to share" (counts as captured) */
+  allowDeclined: boolean;
 };
 
 /** Backend: the disposition template's switches (disposition_categories), as the web reads them */

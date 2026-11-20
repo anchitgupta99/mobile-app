@@ -34,8 +34,12 @@ export type Palette = {
   alert: string;
   onAlert: string;
   danger: string;
+  /** danger, about 10% darker: pressed fill for danger buttons */
+  dangerPressed: string;
   onDanger: string;
   call: string;
+  /** call, about 10% darker: pressed fill for call buttons */
+  callPressed: string;
   onCall: string;
 
   topbar: string;
@@ -112,8 +116,10 @@ export const light: Palette = {
   alert: '#BA1A1A',
   onAlert: '#FFEDEA',
   danger: '#DC3545',
+  dangerPressed: '#C62F3E',
   onDanger: '#FFFFFF',
   call: '#2D874E',
+  callPressed: '#287946',
   onCall: '#FFFFFF',
 
   topbar: '#B4B4EC',
@@ -190,8 +196,10 @@ export const dark: Palette = {
   alert: '#FF6157',
   onAlert: '#330002',
   danger: '#FF877A',
+  dangerPressed: '#E6796E',
   onDanger: '#330002',
   call: '#80D997',
+  callPressed: '#73C388',
   onCall: '#00381B',
 
   topbar: '#181A1B',

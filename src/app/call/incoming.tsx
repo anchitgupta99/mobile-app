@@ -144,12 +144,12 @@ export default function Incoming() {
           />
           <Avatar name={who.named ? name : '#'} size={96} tone="invert" />
         </View>
-        <T v="title" color={c.onCallScreen} style={{ fontSize: 28, lineHeight: 34, textAlign: 'center' }} accessibilityRole="header">
+        <T v="display" color={c.onCallScreen} style={{ textAlign: 'center' }} accessibilityRole="header">
           {name}
         </T>
         {/* The number under the name; without a name the title is already the number */}
         {who.named && (
-          <T v="body" color={c.onCallScreen2} nums>
+          <T v="title" color={c.onCallScreen} nums style={{ fontFamily: font.regular }}>
             {who.number}
           </T>
         )}

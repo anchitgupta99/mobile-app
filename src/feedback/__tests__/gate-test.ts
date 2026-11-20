@@ -24,7 +24,7 @@ describe('decide', () => {
   });
 
   it('keeps critical sounds during a live call', () => {
-    expect(decide('call.connected', { ...on, inCall: true })).toEqual({ haptic: null, sound: 'connect' });
+    expect(decide('call.connected', { ...on, inCall: true })).toEqual({ haptic: 'light', sound: 'connect' });
     expect(decide('dial.key', { ...on, inCall: true }, '7')).toEqual({ haptic: 'selection', sound: 'dtmf_7' });
   });
 

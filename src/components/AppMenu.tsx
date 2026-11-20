@@ -3,6 +3,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Pressable, View } from 'react-native';
 import Animated, { FadeIn, FadeOut, LinearTransition } from 'react-native-reanimated';
 import { create } from 'zustand';
+import type { Campaign } from '@/domain/types';
 import { useCampaigns } from '@/store/campaigns';
 import { useOutbox } from '@/store/outbox';
 import { useSession } from '@/store/session';
@@ -11,12 +12,19 @@ import { useTheme } from '@/theme';
 import { duration } from '@/theme/motion';
 import { alertDialog, notify } from './feedback';
 import { Sheet } from './Sheet';
-import { Avatar, Divider, Icon, StatusChip, T, tap, Toggle, type IconName } from './ui';
+import { Avatar, Button, Divider, Icon, StatusChip, T, tap, Toggle, type IconName } from './ui';
 
-export const useAppMenu = create<{ open: boolean; show: () => void; hide: () => void }>((set) => ({
+/** `show('campaign')` opens the menu with the campaign list already expanded (from "Switch campaign" toasts) */
+export const useAppMenu = create<{
+  open: boolean;
+  section: 'campaign' | null;
+  show: (section?: 'campaign') => void;
+  hide: () => void;
+}>((set) => ({
   open: false,
-  show: () => set({ open: true }),
-  hide: () => set({ open: false }),
+  section: null,
+  show: (section) => set({ open: true, section: section ?? null }),
+  hide: () => set({ open: false, section: null }),
 }));
 
 export function confirmLogout() {
@@ -99,15 +107,35 @@ export function CampaignPicker() {
   const onCall = useCall((s) => !!s.call || !!s.wrapUpCallId);
   const campaigns = useCampaigns((s) => s.list);
   const allowSelection = useCampaigns((s) => s.allowSelection);
-  const [open, setOpen] = useState(false);
+  const [toggled, setOpen] = useState(false);
   const current = campaigns.find((x) => x.id === agent?.campaignId);
-  const dialogTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(
-    () => () => {
-      if (dialogTimer.current) clearTimeout(dialogTimer.current);
-    },
-    [],
-  );
+  // Opened from a "manual calls aren't allowed" toast: the list starts expanded, with campaigns that allow
+  // manual dialing first
+  const fromToast = useAppMenu((s) => s.section === 'campaign');
+  const open = toggled || (fromToast && allowSelection && !onCall);
+  const manualFirst = fromToast && current?.allowManualCalls === false;
+  const shown = manualFirst
+    ? [...campaigns].sort((a, b) => Number(b.allowManualCalls !== false) - Number(a.allowManualCalls !== false))
+    : campaigns;
+  // The campaign picked but not switched to yet: confirmed right here in the menu. (A separate dialog opened after
+  // closing the menu could be lost: its timer died with the menu when the menu closed quickly.)
+  const [pending, setPending] = useState<Campaign | null>(null);
+  const [switching, setSwitching] = useState(false);
+
+  const confirmSwitch = async (cmp: Campaign) => {
+    setSwitching(true);
+    try {
+      await setCampaign(cmp);
+      setPending(null);
+      setOpen(false);
+      useAppMenu.getState().hide();
+      notify(`Switched to ${cmp.name}`, 'success');
+    } catch (e) {
+      notify(e instanceof Error ? e.message : `Couldn't switch to ${cmp.name}`, 'error');
+    } finally {
+      setSwitching(false);
+    }
+  };
 
   return (
     <Animated.View layout={LinearTransition.duration(duration.base)}>
@@ -118,7 +146,10 @@ export function CampaignPicker() {
         onPress={() => {
           if (onCall) return notify('Finish the current call to switch campaigns', 'warning');
           if (!allowSelection) return notify('Your admin has set your campaign', 'info');
-          setOpen((o) => !o);
+          // Collapsing a list the toast expanded drops the toast's hint too
+          if (fromToast) useAppMenu.setState({ section: null });
+          setPending(null);
+          setOpen(!open);
         }}
         right={<Icon name={open ? 'expand-less' : 'expand-more'} color={c.ink3} />}
       />
@@ -128,65 +159,69 @@ export function CampaignPicker() {
           exiting={FadeOut.duration(duration.fast)}
           style={{ paddingHorizontal: 16, paddingBottom: 12, gap: 8 }}
         >
-          {campaigns.map((cmp) => {
+          {shown.map((cmp) => {
             const on = cmp.id === agent?.campaignId;
+            const picked = pending?.id === cmp.id;
             return (
               <Pressable
                 key={cmp.id}
                 accessibilityRole="radio"
-                accessibilityState={{ checked: on }}
+                accessibilityState={{ checked: on || picked, disabled: switching }}
+                disabled={switching}
                 onPress={() => {
                   tap();
-                  if (on) return setOpen(false);
-                  // Close the menu first so the dialog isn't drawn underneath it (same as Log out)
-                  useAppMenu.getState().hide();
-                  if (dialogTimer.current) clearTimeout(dialogTimer.current);
-                  dialogTimer.current = setTimeout(
-                    () =>
-                      alertDialog({
-                        title: `Switch to ${cmp.name}?`,
-                        message:
-                          cmp.kind === 'auto'
-                            ? 'Your queue and leads will change. Auto-call will dial leads from this campaign.'
-                            : 'Your queue and leads will change. You will dial leads yourself in this campaign.',
-                        icon: 'campaign',
-                        tone: 'info',
-                        actions: [
-                          { label: 'Cancel', variant: 'outline' },
-                          {
-                            label: 'Switch',
-                            onPress: () => {
-                              setOpen(false);
-                              setCampaign(cmp)
-                                .then(() => notify(`Switched to ${cmp.name}`, 'success'))
-                                .catch((e) => notify(e instanceof Error ? e.message : `Couldn't switch to ${cmp.name}`, 'error'));
-                            },
-                          },
-                        ],
-                      }),
-                    250,
-                  );
+                  if (on) {
+                    setPending(null);
+                    return setOpen(false);
+                  }
+                  setPending(picked ? null : cmp);
                 }}
-                style={{
+                style={({ pressed }) => ({
                   minHeight: 48,
                   flexDirection: 'row',
                   alignItems: 'center',
                   gap: 10,
                   paddingHorizontal: 14,
                   borderRadius: 10,
-                  borderWidth: 1,
-                  borderColor: on ? c.purple : c.line,
-                  backgroundColor: on ? c.selected : c.surface,
-                }}
+                  borderWidth: picked ? 2 : 1,
+                  borderColor: on || picked ? c.purple : c.line,
+                  backgroundColor: pressed ? c.pressed : on || picked ? c.selected : c.surface,
+                })}
               >
                 <T v="bodyStrong" style={{ flex: 1 }} numberOfLines={1}>
                   {cmp.name}
                 </T>
+                {manualFirst && cmp.allowManualCalls !== false && <StatusChip tone="success" label="Manual dialing on" />}
                 <StatusChip tone={cmp.kind === 'auto' ? 'purple' : 'neutral'} label={cmp.kind === 'auto' ? 'Auto' : 'Manual'} />
                 {on && <Icon name="check" size={20} color={c.purple} />}
               </Pressable>
             );
           })}
+          {pending && (
+            <View
+              accessibilityLiveRegion="polite"
+              style={{
+                marginTop: 4,
+                padding: 12,
+                gap: 10,
+                borderRadius: 12,
+                backgroundColor: c.infoBg,
+                borderWidth: 1,
+                borderColor: c.infoLine,
+              }}
+            >
+              <T v="bodyStrong">Switch to {pending.name}?</T>
+              <T v="caption" color={c.ink}>
+                {pending.kind === 'auto'
+                  ? 'Your queue and leads will change. Auto-call will dial leads from this campaign.'
+                  : 'Your queue and leads will change. You will dial leads yourself in this campaign.'}
+              </T>
+              <View style={{ flexDirection: 'row', gap: 10 }}>
+                <Button label="Cancel" variant="outline" style={{ flex: 1 }} disabled={switching} onPress={() => setPending(null)} />
+                <Button label="Switch" style={{ flex: 1 }} loading={switching} onPress={() => void confirmSwitch(pending)} />
+              </View>
+            </View>
+          )}
         </Animated.View>
       )}
     </Animated.View>

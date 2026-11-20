@@ -96,10 +96,9 @@ describe('decline', () => {
 });
 
 describe('finishWrapUp', () => {
-  it('prunes the note and task link of the wrapped-up call', () => {
-    useCall.setState({ wrapUpCallId: 'cl_a', notes: { cl_a: 'x', cl_b: 'y' }, taskLinks: { cl_a: 'tk_1' } });
+  it('prunes the task link of the wrapped-up call', () => {
+    useCall.setState({ wrapUpCallId: 'cl_a', taskLinks: { cl_a: 'tk_1' } });
     useCall.getState().finishWrapUp();
-    expect(useCall.getState().notes).toEqual({ cl_b: 'y' });
     expect(useCall.getState().taskLinks).toEqual({});
   });
 });

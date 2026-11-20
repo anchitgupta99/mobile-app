@@ -9,7 +9,7 @@ import { StatusSheet } from '@/components/StatusSheet';
 import { TopBar } from '@/components/TopBar';
 import { CountBadge, Icon, T, tap, type IconName } from '@/components/ui';
 import { feedback } from '@/feedback';
-import { useDial } from '@/hooks/useDial';
+import { useDial, useDialAvailability } from '@/hooks/useDial';
 import { useData } from '@/store/data';
 import { useDialpad } from '@/store/dialpad';
 import { useCall } from '@/telephony/callStore';
@@ -57,6 +57,9 @@ function DialButton({ focused, onCall, label, onNavigate }: { focused: boolean; 
   const dial = useDial();
   const num = useDialpad((s) => s.num);
   const armed = focused && !onCall;
+  // Dimmed when the call wouldn't go through, but still tappable so the agent is told why
+  const block = useDialAvailability('keypad');
+  const blocked = armed && !!block;
   const p = useSharedValue(armed ? 1 : 0);
   const press = useSharedValue(1);
 
@@ -89,9 +92,10 @@ function DialButton({ focused, onCall, label, onNavigate }: { focused: boolean; 
   };
 
   return (
-    <View style={{ flex: 1, alignItems: 'center' }}>
+    <View style={{ flex: 1, alignItems: 'center', opacity: blocked ? 0.45 : 1 }}>
       <AnimatedPressable
         accessibilityRole={armed ? 'button' : 'tab'}
+        accessibilityHint={blocked ? "Calls can't start right now. Tap to see why." : undefined}
         accessibilityLabel={armed ? (num ? `Call ${num}` : 'Call. Enter a number first') : label}
         accessibilityState={{ selected: focused, disabled: armed && !num }}
         onPress={onPress}

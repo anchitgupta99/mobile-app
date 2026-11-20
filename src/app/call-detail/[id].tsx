@@ -7,7 +7,7 @@ import { PhoneText } from '@/components/PhoneText';
 import { RecordingPlayer } from '@/components/RecordingPlayer';
 import { Avatar, Button, Card, Divider, Icon, SectionHeader, T, type IconName } from '@/components/ui';
 import { formatDuration, formatWhen } from '@/domain/format';
-import { useDial } from '@/hooks/useDial';
+import { useDial, useDialAvailability } from '@/hooks/useDial';
 import { useSecureScreen } from '@/hooks/useSecureScreen';
 import { useData } from '@/store/data';
 import { useTheme } from '@/theme';
@@ -33,6 +33,7 @@ export default function CallDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const call = useData((s) => s.calls.find((x) => x.id === id));
   const dial = useDial();
+  const dialBlock = useDialAvailability('history');
   const dispositionLabel = useDispositionLabel();
 
   if (!call) {
@@ -126,6 +127,7 @@ export default function CallDetail() {
           icon="call"
           variant="call"
           full
+          style={dialBlock ? { opacity: 0.4 } : undefined}
           onPress={() => void dial({ number: call.number, contactId: call.contactId, source: 'history' })}
         />
       </ScrollView>

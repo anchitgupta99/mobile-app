@@ -48,7 +48,7 @@ export const events: Record<FeedbackEvent, Entry> = {
   'sheet.snap': { haptic: 'light' },
   'status.changed': { haptic: 'medium' },
   'call.answered': { haptic: 'success' },
-  'call.connected': { sound: 'connect', critical: true },
+  'call.connected': { haptic: 'light', sound: 'connect', critical: true },
   'call.ended': { haptic: 'medium', sound: 'end', critical: true },
   'disposition.saved': { haptic: 'success', sound: 'saved' },
   'task.completed': { haptic: 'success', sound: 'complete' },

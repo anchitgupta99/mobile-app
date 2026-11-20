@@ -4,6 +4,7 @@ import { KeyboardAvoidingView, Linking, Pressable, ScrollView, TextInput, View }
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ApiError } from '@/api/client';
+import { DEMO } from '@/api/http';
 import { InfoTip } from '@/components/InfoTip';
 import { Logo } from '@/components/Logo';
 import { helpText } from '@/domain/helpText';
@@ -176,6 +177,17 @@ export default function Login() {
               Forgot your password?
             </T>
           </Pressable>
+          {DEMO && (
+            <View
+              accessibilityRole="text"
+              style={{ flexDirection: 'row', alignItems: 'center', gap: 8, padding: 12, borderRadius: 12, backgroundColor: c.infoBg }}
+            >
+              <Icon name="science" size={18} color={c.infoFg} />
+              <T v="caption" color={c.ink} style={{ flex: 1 }}>
+                Demo mode: no server is connected. Any login ID and password work, and calls answer by themselves.
+              </T>
+            </View>
+          )}
           <Button label="Log In" size="lg" full loading={busy} disabled={!loginId || !password || busy} onPress={() => void run()} />
           <T v="caption" color={c.ink2} style={{ textAlign: 'center' }}>
             Do not have your credentials? Contact:{' '}

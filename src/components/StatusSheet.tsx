@@ -1,9 +1,10 @@
 import { ActivityIndicator, Pressable, View } from 'react-native';
 import { create } from 'zustand';
+import { STATUS_DISPLAY, statusLabel } from '@/domain/agentStatus';
 import type { AgentStatus, BreakType } from '@/domain/types';
 import { useData } from '@/store/data';
 import { useSession } from '@/store/session';
-import { useTheme } from '@/theme';
+import { tone as toneOf, useTheme, type Tone } from '@/theme';
 import { Sheet } from './Sheet';
 import { Button, Icon, SectionHeader, T, tap, type IconName } from './ui';
 
@@ -29,9 +30,8 @@ export function useStatusLabel() {
   return {
     status,
     breakType: brk,
-    // On the server an agent who isn't online or on a break is PAUSED (after login, a campaign switch or a
-    // dropped connection), as the web shows it
-    label: status === 'available' ? 'Online' : status === 'offline' ? 'Paused' : (brk?.label ?? 'On break'),
+    label: statusLabel(status, breakCode, types),
+    icon: STATUS_DISPLAY[status].icon,
     hint:
       status === 'available'
         ? 'Calls ring on your device'
@@ -43,20 +43,21 @@ export function useStatusLabel() {
 
 function Option({
   icon,
-  dot,
+  iconTone = 'warning',
   title,
   body,
   on,
   onPress,
 }: {
   icon?: IconName;
-  dot?: string;
+  iconTone?: Tone;
   title: string;
   body?: string;
   on: boolean;
   onPress: () => void;
 }) {
   const { c } = useTheme();
+  const t = toneOf(c, iconTone);
   return (
     <Pressable
       accessibilityRole="radio"
@@ -78,15 +79,9 @@ function Option({
         backgroundColor: on ? c.selected : pressed ? c.subtle : c.surface,
       })}
     >
-      {dot ? (
-        <View style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: dot, marginHorizontal: 6 }} />
-      ) : (
-        <View
-          style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: c.warningBg, alignItems: 'center', justifyContent: 'center' }}
-        >
-          <Icon name={icon ?? 'free-breakfast'} size={18} color={c.warningFg} />
-        </View>
-      )}
+      <View style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: t.bg, alignItems: 'center', justifyContent: 'center' }}>
+        <Icon name={icon ?? STATUS_DISPLAY.break.icon} size={18} color={t.fg} />
+      </View>
       <View style={{ flex: 1 }}>
         <T v="bodyStrong">{title}</T>
         {body && <T v="caption">{body}</T>}
@@ -116,7 +111,8 @@ export function StatusSheet() {
     <Sheet open={open} onClose={hide} title={breakOnly ? 'Choose a break' : 'Your status'}>
       {!breakOnly && (
         <Option
-          dot={c.signalOk}
+          icon={STATUS_DISPLAY.available.icon}
+          iconTone={STATUS_DISPLAY.available.tone}
           title="Go Online"
           body="Calls ring on your device"
           on={status === 'available'}

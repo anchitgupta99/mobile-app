@@ -5,7 +5,7 @@ import { api, ApiError } from '@/api/client';
 import { formatDuration, formatWhen } from '@/domain/format';
 import type { CallRecord } from '@/domain/types';
 import { useNow } from '@/hooks/useNow';
-import { useTheme } from '@/theme';
+import { minTap, useTheme } from '@/theme';
 import { Card, Icon, IconButton, Pill, T } from './ui';
 
 const LOAD_TIMEOUT_MS = 10000;
@@ -97,7 +97,7 @@ export function RecordingPlayer({ call }: { call: CallRecord }) {
             <Icon name={playing ? 'pause' : 'play-arrow'} size={30} color={c.onPrimary} />
           )}
         </Pressable>
-        <View style={{ flex: 1, gap: 8 }}>
+        <View style={{ flex: 1 }}>
           <Pressable
             accessibilityRole="adjustable"
             accessibilityLabel="Seek"
@@ -109,7 +109,8 @@ export function RecordingPlayer({ call }: { call: CallRecord }) {
             onAccessibilityAction={(e) => seek(pos + (e.nativeEvent.actionName === 'increment' ? 10 : -10))}
             onLayout={(e: LayoutChangeEvent) => (width.current = e.nativeEvent.layout.width)}
             onPress={(e) => seek((e.nativeEvent.locationX / width.current) * dur)}
-            style={{ height: 24, justifyContent: 'center' }}
+            // A 48dp touch area around a thin 6dp track
+            style={{ height: minTap, justifyContent: 'center' }}
           >
             <View style={{ height: 6, borderRadius: 3, backgroundColor: c.mutedFill, overflow: 'hidden' }}>
               <View style={{ width: `${Math.min(100, (pos / dur) * 100)}%`, height: 6, backgroundColor: c.violet }} />

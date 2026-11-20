@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { runOnJS } from 'react-native-reanimated';
-import { useTheme } from '@/theme';
+import { minTap, useTheme } from '@/theme';
 import { tap } from './ui';
 
 /** 0–1 slider: drag or tap anywhere on the track. Steps of 5% for screen readers. */
@@ -47,7 +47,8 @@ export function Slider({ value, onChange, label }: { value: number; onChange: (v
         accessibilityActions={[{ name: 'increment' }, { name: 'decrement' }]}
         onAccessibilityAction={(e) => onChange(clamp(value + (e.nativeEvent.actionName === 'increment' ? 0.05 : -0.05)))}
         onLayout={(e) => setWidth(Math.max(1, e.nativeEvent.layout.width))}
-        style={{ height: 32, justifyContent: 'center', flex: 1 }}
+        // A 48dp touch area; the visible track stays 6dp
+        style={{ height: minTap, justifyContent: 'center', flex: 1 }}
       >
         <View style={{ height: 6, borderRadius: 3, backgroundColor: c.mutedFill, borderWidth: 1, borderColor: c.divider }}>
           <View style={{ width: pct, height: '100%', borderRadius: 3, backgroundColor: c.purple }} />

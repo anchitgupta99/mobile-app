@@ -1,4 +1,3 @@
-import { router } from 'expo-router';
 import { useMemo, useState } from 'react';
 import { RefreshControl, SectionList, View } from 'react-native';
 import { notify } from '@/components/feedback';
@@ -6,7 +5,7 @@ import { FadeInItem } from '@/components/motion/FadeInItem';
 import { HintCard } from '@/components/HintCard';
 import { ListPlaceholder } from '@/components/ListPlaceholder';
 import { TaskRow, useTaskActions } from '@/components/TaskRow';
-import { Button, Divider, EmptyState, Segmented, T } from '@/components/ui';
+import { Divider, EmptyState, Segmented, T } from '@/components/ui';
 import { startOfDay } from '@/domain/format';
 import { feedback } from '@/feedback';
 import { helpText } from '@/domain/helpText';
@@ -61,7 +60,6 @@ export default function Callbacks() {
           <T v="title" accessibilityRole="header">
             Callbacks
           </T>
-          <Button label="New" icon="add" size="sm" variant="secondary" onPress={() => router.push('/task/new')} />
         </View>
         <Segmented
           value={view}
@@ -120,7 +118,7 @@ export default function Callbacks() {
               <EmptyState
                 icon="task-alt"
                 title={view === 'open' ? 'Nothing due' : 'No completed callbacks yet'}
-                body={view === 'open' ? 'Callbacks you schedule in wrap-up and missed calls show up here.' : undefined}
+                body={view === 'open' ? 'Callbacks you schedule while disposing a call will appear here.' : undefined}
               />
             }
           />

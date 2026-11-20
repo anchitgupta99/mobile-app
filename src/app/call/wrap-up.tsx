@@ -5,7 +5,11 @@ import Animated, { FadeIn, FadeOut, LinearTransition } from 'react-native-reanim
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { api } from '@/api/client';
 import { webText } from '@/api/errors';
+import { DetailFields } from '@/components/call/DetailFields';
 import { DispositionPicker } from '@/components/DispositionPicker';
+import { Sheet } from '@/components/Sheet';
+import { categoryOf, missingRequired } from '@/domain/details';
+import { capturedValues, useDetails } from '@/store/details';
 import { feedback } from '@/feedback';
 import { duration } from '@/theme/motion';
 import { InfoTip } from '@/components/InfoTip';
@@ -96,7 +100,19 @@ function DateTimeField({ field, value, onChange }: { field: DispositionField; va
 }
 
 /** One of the web's two callback choices: "For Me" (routes back to this agent) or "Campaign" (any available agent) */
-function RouteChoice({ icon, title, body, on, onPress }: { icon: IconName; title: string; body: string; on: boolean; onPress: () => void }) {
+function RouteChoice({
+  icon,
+  title,
+  body,
+  on,
+  onPress,
+}: {
+  icon: IconName;
+  title: string;
+  body: string;
+  on: boolean;
+  onPress: () => void;
+}) {
   const { c } = useTheme();
   return (
     <Pressable
@@ -154,7 +170,6 @@ export default function WrapUp() {
   const upsertTask = useData((s) => s.upsertTask);
   const navigation = useNavigation();
   const rootState = useRootNavigationState();
-  const draft = useCall((s) => (id ? (s.notes[id] ?? '') : ''));
   const taskId = useCall((s) => (id ? s.taskLinks[id] : undefined));
   const finishWrapUp = useCall((s) => s.finishWrapUp);
   const setStatus = useSession((s) => s.setStatus);
@@ -186,7 +201,11 @@ export default function WrapUp() {
       gone = true;
     };
   }, [fromServer, campaignId, attempt]);
-  const config: DispositionConfig = remote ?? { ...storeConfig, dispositions: [], acwSeconds: findCampaign(campaignId)?.wrapUpSeconds ?? 30 };
+  const config: DispositionConfig = remote ?? {
+    ...storeConfig,
+    dispositions: [],
+    acwSeconds: findCampaign(campaignId)?.wrapUpSeconds ?? 30,
+  };
   const loadingDispositions = fromServer && !remote;
   // Wrap-up replaced the active-call screen, so the route under it is wherever the call started.
   // Only unwind to the callbacks list when that was the tab group; from a contact or task page a
@@ -200,12 +219,14 @@ export default function WrapUp() {
   const chosen = isComplete(path) ? path[path.length - 1] : null;
   // Fields can sit on any level of the path, e.g. "Sale" asks for the amount whichever product was sold
   const pathFields = useMemo(() => path.flatMap((d) => d.fields), [path]);
-  const [notes, setNotes] = useState(call?.notes || draft);
+  const [notes, setNotes] = useState(call?.notes || '');
   const [fields, setFields] = useState<Record<string, string>>({});
   const [touched, setTouched] = useState(false);
   // Which Submit is with the server, and why the server last turned it down (shown above the buttons, as the web's)
   const [saving, setSaving] = useState<'available' | 'break' | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const details = useDetails((s) => (id ? s.byCall[id] : undefined));
+  const [detailsOpen, setDetailsOpen] = useState(false);
   // Backend, as the web's panel: Mark DND, and Schedule Callback with who gets it (For Me / Campaign) and when
   const [dnd, setDnd] = useState(false);
   const [scheduleCallback, setScheduleCallback] = useState(false);
@@ -290,8 +311,17 @@ export default function WrapUp() {
   const callbackActive = showCallback && (scheduleCallback || requiresCallback);
   const callbackIncomplete = callbackActive && !callbackAt;
   const callbackCampaign = findCampaign(call.campaignId)?.name ?? call.campaignName ?? '';
+  // Required details: only a "connected" outcome needs them. No answer, busy, wrong number and DNC go through, so
+  // nobody has to make data up to get past the check. "Customer declined to share" counts as captured.
+  const connected = categoryOf(path) === 'connected';
+  const detailsMissing = connected && details ? missingRequired(details.fields, details.entries) : [];
   const valid =
-    (noOptions || !!chosen) && missing.length === 0 && !notesMissing && !loadingDispositions && !callbackIncomplete;
+    (noOptions || !!chosen) &&
+    missing.length === 0 &&
+    !notesMissing &&
+    !loadingDispositions &&
+    !callbackIncomplete &&
+    detailsMissing.length === 0;
 
   /** The web's /api/leads/disposition body; a timed-out wrap-up goes in as it stands (isTimeout) */
   const serverBody = (timeout: boolean) => {
@@ -324,7 +354,10 @@ export default function WrapUp() {
       fieldValue,
       leadId: call.leadId ?? null,
       // A number that isn't a lead yet becomes one, as on the web (never with a name the server masked)
-      ...(!call.leadId && { leadData: { phone_number: call.number, name: sendableName(call.customerName), status: 'IDLE' } }),
+      // …with the required details captured on the call, since they couldn't be saved to a lead yet
+      ...(!call.leadId && {
+        leadData: { ...capturedValues(call.id), phone_number: call.number, name: sendableName(call.customerName), status: 'IDLE' },
+      }),
     };
   };
 
@@ -560,6 +593,25 @@ export default function WrapUp() {
           />
         )}
 
+        {detailsMissing.length > 0 && (
+          <View
+            accessibilityRole="alert"
+            style={{ gap: 10, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: c.warningLine, backgroundColor: c.warningBg }}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <Icon name="assignment-late" size={20} color={c.warningFg} />
+              <T v="bodyStrong" style={{ flex: 1 }}>
+                {detailsMissing.length === 1 ? '1 required detail is missing' : `${detailsMissing.length} required details are missing`}
+              </T>
+            </View>
+            <T v="caption" color={c.ink}>
+              A connected call needs {detailsMissing.map((f) => f.label).join(', ')}. Add {detailsMissing.length === 1 ? 'it' : 'them'}, or
+              mark that the customer declined to share.
+            </T>
+            <Button label="Add details" icon="edit-note" variant="secondary" onPress={() => setDetailsOpen(true)} />
+          </View>
+        )}
+
         {pathFields.map((f) => (
           <Animated.View
             key={f.key}
@@ -590,9 +642,7 @@ export default function WrapUp() {
         {showCallback && (
           <Animated.View layout={LinearTransition.duration(duration.base)} style={{ gap: 12 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-              <T v="label">
-                Schedule Callback{requiresCallback ? ' *' : ''}
-              </T>
+              <T v="label">Schedule Callback{requiresCallback ? ' *' : ''}</T>
               <Toggle label="Schedule Callback" value={callbackActive} onChange={setScheduleCallback} disabled={requiresCallback} />
             </View>
             {callbackActive && (
@@ -621,7 +671,6 @@ export default function WrapUp() {
             )}
           </Animated.View>
         )}
-
       </ScrollView>
 
       <View
@@ -665,6 +714,10 @@ export default function WrapUp() {
           {helpText.requiredFields}
         </T>
       </View>
+      <Sheet open={detailsOpen} onClose={() => setDetailsOpen(false)} title="Required details">
+        <DetailFields callId={call.id} />
+        <Button label="Done" full onPress={() => setDetailsOpen(false)} />
+      </Sheet>
     </KeyboardAvoidingView>
   );
 }

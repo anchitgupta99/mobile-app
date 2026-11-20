@@ -45,7 +45,7 @@ function SelectField({
           borderRadius: 8,
           borderWidth: 1,
           borderColor: error ? c.errorFg : c.line,
-          backgroundColor: pressed ? c.subtle : c.surface,
+          backgroundColor: pressed ? c.pressed : c.surface,
           flexDirection: 'row',
           alignItems: 'center',
           paddingHorizontal: 14,
@@ -53,7 +53,7 @@ function SelectField({
         })}
       >
         {value && dot && <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: dot }} />}
-        <T v="body" numberOfLines={1} color={value ? c.ink : c.inkPlaceholder} style={{ flex: 1, fontSize: 16, lineHeight: 22 }}>
+        <T v="body" numberOfLines={1} color={value ? c.ink : c.inkPlaceholder} style={{ flex: 1 }}>
           {value ?? placeholder}
         </T>
         <Icon name="expand-more" size={22} color={c.ink2} />
@@ -165,7 +165,7 @@ export function DispositionPicker({
                     gap: 10,
                     paddingHorizontal: 16,
                     paddingVertical: 8,
-                    backgroundColor: pressed ? c.subtle : on ? c.selected : c.surface,
+                    backgroundColor: pressed ? c.pressed : on ? c.selected : c.surface,
                   })}
                 >
                   <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: dotFor(root) }} />

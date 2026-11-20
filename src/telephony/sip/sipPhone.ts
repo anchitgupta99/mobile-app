@@ -2,6 +2,7 @@ import { UA, WebSocketInterface } from 'jssip';
 import type { RTCSession } from 'jssip/lib/RTCSession';
 import { create } from 'zustand';
 import { api, type WebphoneConfig } from '@/api/client';
+import { DEMO } from '@/api/http';
 import { iceServersFor } from './iceServers';
 import { loadWebRTC } from './webrtc';
 
@@ -332,6 +333,10 @@ export const useSipPhone = create<SipPhoneState>((set, get) => ({
   extension: null,
   start: async () => {
     if (ua || get().status === 'connecting') return;
+    if (DEMO) {
+      set({ status: 'unsupported', detail: 'The webphone is off in demo mode (no server connected).' });
+      return;
+    }
     if (!loadWebRTC()) {
       log('react-native-webrtc not available (Expo Go or web)');
       set({ status: 'unsupported', detail: "The webphone needs the Claritel app build; it can't run in Expo Go." });

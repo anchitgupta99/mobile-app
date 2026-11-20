@@ -60,11 +60,14 @@ function Meta({ label, value, right }: { label: string; value: string; right?: R
 export function CallCard({
   call,
   onCallBack,
+  callDimmed,
   onLead,
   onPlay,
 }: {
   call: CallRecord;
   onCallBack: () => void;
+  /** The call can't start right now: looks unavailable but stays tappable, so tapping says why */
+  callDimmed?: boolean;
   onLead: () => void;
   onPlay: () => void;
 }) {
@@ -150,7 +153,8 @@ export function CallCard({
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Disposition details"
-              hitSlop={12}
+              // 16dp icon + 16 on each side = a 48dp target
+              hitSlop={16}
               onPress={() =>
                 alertDialog({
                   title: disposition,
@@ -172,7 +176,9 @@ export function CallCard({
         <T v="caption" color={c.ink3} style={{ flex: 1 }}>
           Read-only
         </T>
-        <IconButton icon="call" label="Call back" size={40} color={c.call} onPress={onCallBack} />
+        <View style={{ opacity: callDimmed ? 0.4 : 1 }}>
+          <IconButton icon="call" label="Call back" size={40} color={c.call} onPress={onCallBack} />
+        </View>
         <IconButton icon="visibility" label="View lead details" size={40} onPress={onLead} />
         <IconButton icon="play-arrow" label={call.hasRecording ? 'Play recording' : 'No recording'} size={40} onPress={onPlay} />
       </View>

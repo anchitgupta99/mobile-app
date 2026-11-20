@@ -54,12 +54,14 @@ export function SkeletonRows({ count = 6 }: { count?: number }) {
 
 /**
  * Use as a list's empty component. Before the first sync it shows placeholders (or a retry if that sync
- * failed), so "nothing here" only appears once we actually know there is nothing.
+ * failed), so "nothing here" only appears once we actually know there is nothing. `error` replaces the
+ * generic first-load failure, for screens that word their own (and track later failures themselves).
  */
-export function ListPlaceholder({ empty, count }: { empty: ReactNode; count?: number }) {
+export function ListPlaceholder({ empty, error, count }: { empty: ReactNode; error?: ReactNode; count?: number }) {
   const { loading, failed } = useFirstLoad();
   const refreshing = useData((s) => s.refreshing);
   if (loading || (failed && refreshing)) return <SkeletonRows count={count} />;
+  if (failed && error) return <>{error}</>;
   if (failed)
     return (
       <EmptyState

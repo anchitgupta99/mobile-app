@@ -8,6 +8,7 @@ import { duration } from '@/theme/motion';
 import { RollingDigits } from './motion/RollingDigits';
 import { useSipPhone } from '@/telephony/sip/sipPhone';
 import { formatDuration } from '@/domain/format';
+import { STATUS_DISPLAY } from '@/domain/agentStatus';
 import type { AgentStatus } from '@/domain/types';
 import { useDueTasks } from '@/hooks/useDueTasks';
 import { useNow } from '@/hooks/useNow';
@@ -55,13 +56,9 @@ export function StatusPill() {
   const late = !call && !wrapping && overrun !== null;
 
   const [pressed, setPressed] = useState(false);
-  const reduced = useReducedMotion();
-  const dotColor = late ? c.errorFg : colorOf(live);
-  const dot = useSharedValue(dotColor);
-  useEffect(() => {
-    dot.set(withTiming(dotColor, { duration: reduced ? 0 : duration.base }));
-  }, [dotColor, reduced, dot]);
-  const dotStyle = useAnimatedStyle(() => ({ backgroundColor: dot.get() }));
+  // An icon as well as a colour, so the status reads without colour (STATUS_DISPLAY)
+  const shown = STATUS_DISPLAY[late ? 'overrun' : live];
+  const iconColor = late ? c.errorFg : colorOf(live);
 
   // Haptic only for agent status changes (available/break/offline), not call or wrap-up transitions
   const prevLive = useRef(live);
@@ -77,6 +74,7 @@ export function StatusPill() {
       layout={LinearTransition.duration(duration.base)}
       accessibilityRole="button"
       accessibilityLabel={`Status: ${label}, ${elapsed}${late ? ', over the break limit' : ''}. Change status`}
+      hitSlop={2}
       onPressIn={() => setPressed(true)}
       onPressOut={() => setPressed(false)}
       onPress={() => {
@@ -85,8 +83,8 @@ export function StatusPill() {
       }}
       // Animated components don't apply function styles, so pressed state is tracked locally
       style={{
-        height: 40,
-        paddingLeft: 12,
+        height: 44,
+        paddingLeft: 10,
         paddingRight: 10,
         borderRadius: 20,
         backgroundColor: late ? c.errorBg : pressed ? c.surface : c.topbarControl,
@@ -98,7 +96,7 @@ export function StatusPill() {
         flexShrink: 1,
       }}
     >
-      <Animated.View style={[{ width: 10, height: 10, borderRadius: 5 }, dotStyle]} />
+      <Icon name={shown.icon} size={18} color={iconColor} />
       <T v="label" color={late ? c.errorFg : c.onTopbar} numberOfLines={1} style={{ flexShrink: 1 }}>
         {label}
       </T>
@@ -127,15 +125,17 @@ function ConnectivityChip() {
       accessibilityLabel={`${label}. ${pending} items waiting to sync`}
       accessibilityHint={helpText.syncChip}
       onPress={() => router.push('/sync')}
-      style={{
+      // 32 tall to fit the bar; the touch area reaches 48
+      hitSlop={8}
+      style={({ pressed }) => ({
         height: 32,
         paddingHorizontal: 10,
         borderRadius: 16,
         flexDirection: 'row',
         alignItems: 'center',
         gap: 4,
-        backgroundColor: c.topbarControl,
-      }}
+        backgroundColor: pressed ? c.surface : c.topbarControl,
+      })}
     >
       <Icon name="cloud-upload" size={16} color={c.onTopbar} />
       <T v="caption" color={c.onTopbar} style={{ fontFamily: font.semibold }}>
@@ -166,15 +166,17 @@ function WebphoneChip() {
         if (!registered && status !== 'connecting') void useSipPhone.getState().retry();
         router.push('/diagnostics');
       }}
-      style={{
+      // 32 tall to fit the bar; the touch area reaches 48
+      hitSlop={8}
+      style={({ pressed }) => ({
         height: 32,
         paddingHorizontal: 10,
         borderRadius: 16,
         flexDirection: 'row',
         alignItems: 'center',
         gap: 6,
-        backgroundColor: c.topbarControl,
-      }}
+        backgroundColor: pressed ? c.surface : c.topbarControl,
+      })}
     >
       <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: dot }} />
       <T v="caption" color={c.onTopbar} style={{ fontFamily: font.semibold }}>
@@ -240,7 +242,7 @@ function NotificationBell() {
             justifyContent: 'center',
           }}
         >
-          <T v="caption" color={c.onDanger} nums style={{ fontFamily: font.semibold, fontSize: 10, lineHeight: 12 }}>
+          <T v="caption" color={c.onDanger} nums maxFontSizeMultiplier={1.2} style={{ fontFamily: font.semibold, lineHeight: 14 }}>
             {count > 9 ? '9+' : count}
           </T>
         </View>

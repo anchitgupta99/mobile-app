@@ -3,6 +3,7 @@ import { AppState } from 'react-native';
 import { connectAgentEvents, disconnectAgentEvents } from '@/api/events';
 import { connectAgentSocket, disconnectAgentSocket, wakeAgentSocket } from '@/api/socket';
 import { notify } from '@/components/feedback';
+import { checkDial, showDialBlock } from '@/hooks/useDial';
 import { useData } from '@/store/data';
 import { SESSION_EXPIRED, useSession } from '@/store/session';
 import { useCall } from '@/telephony/callStore';
@@ -14,12 +15,12 @@ import { useCall } from '@/telephony/callStore';
  * as the web reloads its list.
  */
 async function dialDueCallback(phone: string) {
-  const session = useSession.getState();
-  if (session.status !== 'available') {
-    notify('Switch to READY status', 'error', undefined, { title: 'Status Error' });
+  // The same check as every other dial, so the agent gets the same message (and a way to fix it)
+  const block = checkDial('task');
+  if (block) {
+    showDialBlock(block);
     return;
   }
-  if (!session.agent?.campaignId) return;
   const res = await useCall.getState().startOutbound({ number: phone, source: 'task', callback: true });
   if (!res.ok) notify('Unable to start call', 'error', undefined, { title: 'Call Error' });
   void useData.getState().sync();

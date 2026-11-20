@@ -1,7 +1,7 @@
 import { useRef, useState, type ReactNode } from 'react';
 import { AccessibilityInfo, Modal, Pressable, useWindowDimensions, View } from 'react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
-import { useTheme } from '@/theme';
+import { minTap, useTheme } from '@/theme';
 import { duration } from '@/theme/motion';
 import { Icon, T, tap } from './ui';
 
@@ -50,7 +50,8 @@ export function InfoTip({
         accessibilityLabel={title ? `About ${title}` : 'More info'}
         accessibilityHint="Shows an explanation"
         onPress={open}
-        hitSlop={12}
+        // The bare icon gets a 48dp target; a wrapped child is usually larger already
+        hitSlop={children ? 12 : Math.max(12, (minTap - size) / 2)}
         style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1, justifyContent: 'center' })}
       >
         {children ?? <Icon name="info-outline" size={size} color={color ?? c.ink3} />}

@@ -16,6 +16,7 @@ import { setSipCallHandlers, type IncomingSipCall } from './sip/sipPhone';
 import type { InboundEnded, InboundRing } from '@/api/socket';
 import { MASK_CHAR, maskPhoneForDisplay, maskPhoneFully, type PhoneMaskRule } from '@/domain/phoneMask';
 import { resolveCallTypeLabel } from '@/domain/callType';
+import { useDetails } from '@/store/details';
 
 export type DialSource = 'keypad' | 'contact' | 'history' | 'task';
 
@@ -105,7 +106,6 @@ export type DialResult = { ok: true } | { ok: false; title: string; message: str
 type CallStore = {
   call: ActiveCall | null;
   wrapUpCallId: string | null;
-  notes: Record<string, string>;
   taskLinks: Record<string, string>;
   consult: Consult | null;
   conference: Conference | null;
@@ -113,7 +113,6 @@ type CallStore = {
   cancelConsult: () => void;
   toggleLegMute: (id: string) => void;
   removeLeg: (id: string) => void;
-  setNote: (callId: string, text: string) => void;
   startOutbound: (input: {
     number: string;
     contactId?: string | null;
@@ -272,6 +271,13 @@ export const useCall = create<CallStore>((set, get) => {
       .then((ctx) => {
         maskRules.set(campaignId, ctx.maskRule);
         const cur = get().call;
+        // The campaign's required details, prefilled from the CRM, for the call screen's details panel and wrap-up
+        if (ctx.captureFields.length) {
+          useDetails.getState().init(id, ctx.captureFields, ctx.values, {
+            leadId: (cur?.id === id ? cur.leadId : null) ?? ctx.leadId,
+            callUuid: cur?.id === id ? cur.uuid : c.uuid,
+          });
+        }
         apply({
           displayNumber: maskPhoneForDisplay(c.number, ctx.maskRule),
           customerName: ctx.name || undefined,
@@ -529,7 +535,6 @@ export const useCall = create<CallStore>((set, get) => {
   return {
     call: null,
     wrapUpCallId: null,
-    notes: {},
     taskLinks: {},
     consult: null,
     conference: null,
@@ -579,8 +584,6 @@ export const useCall = create<CallStore>((set, get) => {
       if (!legs.some((l) => l.kind === 'customer')) return get().end();
       set({ conference: { ...conf, legs } });
     },
-
-    setNote: (callId, text) => set((s) => ({ notes: { ...s.notes, [callId]: text } })),
 
     startOutbound: async ({ number, source, taskId = null, dialMode = 'Manual', callback = false }) => {
       if (get().call) return { ok: false, title: 'Already on a call', message: 'End the current call first.' };
@@ -838,19 +841,20 @@ export const useCall = create<CallStore>((set, get) => {
 
     finishWrapUp: () =>
       set((s) => {
-        // The wrap-up screen has read its draft note and task link by now; drop them so the maps don't grow per call
+        // The wrap-up screen has read its task link by now; drop it so the map doesn't grow per call
         const id = s.wrapUpCallId;
         if (!id) return { wrapUpCallId: null };
-        const { [id]: _note, ...notes } = s.notes;
         const { [id]: _link, ...taskLinks } = s.taskLinks;
-        return { wrapUpCallId: null, notes, taskLinks };
+        useDetails.getState().drop(id);
+        return { wrapUpCallId: null, taskLinks };
       }),
 
     reset: () => {
       const c = get().call;
       clearTimers();
       transferredTo = null;
-      set({ call: null, wrapUpCallId: null, consult: null, conference: null, notes: {}, taskLinks: {} });
+      set({ call: null, wrapUpCallId: null, consult: null, conference: null, taskLinks: {} });
+      useDetails.getState().clear();
       // After clearing, so the webphone's "ended" doesn't record the call or open a wrap-up
       if (c) {
         void voipAdapter.end(c.id);

@@ -55,16 +55,20 @@ export function tap(kind: 'light' | 'medium' | 'success' | 'warning' = 'light') 
 
 type Variant = 'display' | 'title' | 'h2' | 'h3' | 'body' | 'bodyStrong' | 'label' | 'caption' | 'overline';
 
+/**
+ * The type scale: five sizes only (32 / 22 / 17 / 15 / 13). Vary weight, case or colour, not size.
+ * Don't override fontSize inline; pick a variant. (Exception: sizes computed from a component prop.)
+ */
 const variants: Record<Variant, TextStyle> = {
-  display: { fontFamily: font.bold, fontSize: 34, lineHeight: 40, letterSpacing: -0.5 },
-  title: { fontFamily: font.bold, fontSize: 24, lineHeight: 30, letterSpacing: -0.2 },
-  h2: { fontFamily: font.bold, fontSize: 18, lineHeight: 24 },
-  h3: { fontFamily: font.semibold, fontSize: 16, lineHeight: 22 },
+  display: { fontFamily: font.bold, fontSize: 32, lineHeight: 38, letterSpacing: -0.5 },
+  title: { fontFamily: font.bold, fontSize: 22, lineHeight: 28, letterSpacing: -0.2 },
+  h2: { fontFamily: font.bold, fontSize: 17, lineHeight: 22 },
+  h3: { fontFamily: font.semibold, fontSize: 17, lineHeight: 22 },
   body: { fontFamily: font.regular, fontSize: 15, lineHeight: 21 },
   bodyStrong: { fontFamily: font.semibold, fontSize: 15, lineHeight: 21 },
   label: { fontFamily: font.semibold, fontSize: 13, lineHeight: 18 },
-  caption: { fontFamily: font.regular, fontSize: 12, lineHeight: 16 },
-  overline: { fontFamily: font.bold, fontSize: 11, lineHeight: 14, letterSpacing: 0.8, textTransform: 'uppercase' },
+  caption: { fontFamily: font.regular, fontSize: 13, lineHeight: 18 },
+  overline: { fontFamily: font.bold, fontSize: 13, lineHeight: 16, letterSpacing: 0.8, textTransform: 'uppercase' },
 };
 
 export function T({ v = 'body', color, nums, style, ...rest }: TextProps & { v?: Variant; color?: string; nums?: boolean }) {
@@ -78,6 +82,9 @@ export function T({ v = 'body', color, nums, style, ...rest }: TextProps & { v?:
     />
   );
 }
+
+/** One disabled look for every control: 40% opacity (the label dims with it), plus accessibilityState.disabled. */
+export const DISABLED_OPACITY = 0.4;
 
 type ButtonVariant = 'primary' | 'secondary' | 'outline' | 'ghost' | 'danger' | 'call';
 
@@ -108,10 +115,10 @@ export function Button({
   const map: Record<ButtonVariant, { bg: string; fg: string; border?: string; pressed: string }> = {
     primary: { bg: c.primary, fg: c.onPrimary, pressed: c.primaryPressed },
     secondary: { bg: c.lavender, fg: c.onLavender, pressed: c.lavenderSoft },
-    outline: { bg: c.surface, fg: c.ink, border: c.line, pressed: c.subtle },
+    outline: { bg: c.surface, fg: c.ink, border: c.line, pressed: c.pressed },
     ghost: { bg: 'transparent', fg: c.purple, pressed: c.pressed },
-    danger: { bg: c.danger, fg: c.onDanger, pressed: c.danger },
-    call: { bg: c.call, fg: c.onCall, pressed: c.call },
+    danger: { bg: c.danger, fg: c.onDanger, pressed: c.dangerPressed },
+    call: { bg: c.call, fg: c.onCall, pressed: c.callPressed },
   };
   const s = map[variant];
   const h = size === 'lg' ? 56 : size === 'sm' ? 40 : minTap;
@@ -141,7 +148,7 @@ export function Button({
           alignItems: 'center',
           justifyContent: 'center',
           gap: 8,
-          opacity: off && !loading ? 0.45 : 1,
+          opacity: off && !loading ? DISABLED_OPACITY : 1,
           alignSelf: full ? 'stretch' : 'auto',
         },
         style,
@@ -172,6 +179,7 @@ export function IconButton({
   badge,
   hint,
   disabled,
+  loading,
 }: {
   icon: IconName;
   label: string;
@@ -183,17 +191,20 @@ export function IconButton({
   /** Screen reader hint describing what the button does or shows */
   hint?: string;
   disabled?: boolean;
+  /** Shows a spinner in place of the icon and blocks presses until the work finishes */
+  loading?: boolean;
 }) {
   const { c } = useTheme();
   const bg = variant === 'filled' ? c.purple : variant === 'outline' ? c.surface : variant === 'topbar' ? c.topbarControl : 'transparent';
   const fg = color ?? (variant === 'filled' ? c.onPurple : variant === 'topbar' ? c.onTopbar : c.ink2);
+  const off = !!disabled || !!loading;
   return (
     <PressableScale
       accessibilityRole="button"
       accessibilityLabel={label}
       accessibilityHint={hint}
-      accessibilityState={{ disabled: !!disabled }}
-      disabled={disabled}
+      accessibilityState={{ disabled: off, busy: !!loading }}
+      disabled={off}
       hitSlop={Math.max(0, (minTap - size) / 2)}
       scaleTo={0.92}
       onPress={() => {
@@ -206,14 +217,18 @@ export function IconButton({
         borderRadius: size / 2,
         alignItems: 'center',
         justifyContent: 'center',
-        opacity: disabled ? 0.4 : 1,
+        opacity: disabled && !loading ? DISABLED_OPACITY : 1,
         backgroundColor: bg,
         borderWidth: variant === 'outline' ? 1 : 0,
         borderColor: c.divider,
       }}
       pressedStyle={{ backgroundColor: c.pressed }}
     >
-      <Icon name={icon} size={Math.round(size * 0.46)} color={fg} />
+      {loading ? (
+        <ActivityIndicator size="small" color={fg} />
+      ) : (
+        <Icon name={icon} size={Math.round(size * 0.46)} color={fg} />
+      )}
       {!!badge && (
         <View style={{ position: 'absolute', top: 2, right: 2 }}>
           <CountBadge n={badge} />
@@ -229,16 +244,16 @@ export function CountBadge({ n }: { n: number }) {
   return (
     <View
       style={{
-        minWidth: 18,
-        height: 18,
-        paddingHorizontal: 5,
-        borderRadius: 9,
+        minWidth: 20,
+        minHeight: 20,
+        paddingHorizontal: 6,
+        borderRadius: 10,
         backgroundColor: c.alert,
         alignItems: 'center',
         justifyContent: 'center',
       }}
     >
-      <T v="caption" color={c.onAlert} style={{ fontFamily: font.bold, fontSize: 11, lineHeight: 14 }} nums>
+      <T v="caption" color={c.onAlert} style={{ fontFamily: font.bold, lineHeight: 16 }} maxFontSizeMultiplier={1.2} nums>
         {n > 99 ? '99+' : n}
       </T>
     </View>
@@ -293,6 +308,8 @@ export function Pill({
         tap();
         onPress?.();
       }}
+      // 36 tall + 6 above and below = a 48dp touch target
+      hitSlop={6}
       style={{
         height: 36,
         paddingHorizontal: 14,
@@ -343,9 +360,20 @@ export function Card({
         tap();
         onPress();
       }}
-      style={({ pressed }) => [base, pressed && { backgroundColor: c.subtle }, style]}
+      style={[base, style]}
     >
-      {children}
+      {({ pressed }) => (
+        <>
+          {children}
+          {/* An overlay (not a fill swap), so the pressed tint shows over any background the caller sets */}
+          {pressed && (
+            <View
+              pointerEvents="none"
+              style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: c.pressed }}
+            />
+          )}
+        </>
+      )}
     </Pressable>
   );
 }
@@ -421,7 +449,19 @@ export function SectionHeader({
         )}
       </View>
       {action && (
-        <Pressable accessibilityRole="button" onPress={onAction} hitSlop={12} style={{ minHeight: 32, justifyContent: 'center' }}>
+        <Pressable
+          accessibilityRole="button"
+          onPress={onAction}
+          hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+          style={({ pressed }) => ({
+            minHeight: 32,
+            justifyContent: 'center',
+            paddingHorizontal: 8,
+            marginRight: -8,
+            borderRadius: 8,
+            backgroundColor: pressed ? c.pressed : 'transparent',
+          })}
+        >
           <T v="label" color={c.purple}>
             {action}
           </T>
@@ -507,8 +547,8 @@ export const Field = forwardRef<
           style={[
             {
               flex: 1,
-              fontFamily: font.regular,
-              fontSize: 16,
+              ...variants.body,
+              lineHeight: undefined,
               color: c.ink,
               paddingVertical: 14,
               minHeight: rest.multiline ? 96 : undefined,
@@ -555,18 +595,19 @@ export function Segmented<V extends string>({
               tap();
               onChange(o.value);
             }}
-            style={{
+            style={({ pressed }) => ({
               flex: 1,
-              minHeight: 42,
+              minHeight: minTap,
               borderRadius: 8,
               alignItems: 'center',
               justifyContent: 'center',
               flexDirection: 'row',
               gap: 6,
-              backgroundColor: on ? c.surface : 'transparent',
+              backgroundColor: on ? c.surface : pressed ? c.pressed : 'transparent',
               borderWidth: on ? 1 : 0,
               borderColor: c.line,
-            }}
+              opacity: on && pressed ? 0.85 : 1,
+            })}
           >
             {o.icon && <Icon name={o.icon} size={16} color={on ? c.accentInk : c.ink2} />}
             <T v="label" color={on ? c.inkStrong : c.ink2}>
@@ -616,7 +657,7 @@ export function Row({
           paddingLeft: 16,
           paddingRight: right ? 4 : 16,
           paddingVertical: 10,
-          backgroundColor: pressed ? c.subtle : c.surface,
+          backgroundColor: pressed ? c.pressed : c.surface,
         })}
       >
         {left}
@@ -678,7 +719,7 @@ export function Toggle({
         borderWidth: 1,
         borderColor: value ? on : c.line,
         justifyContent: 'center',
-        opacity: disabled ? 0.6 : 1,
+        opacity: disabled ? DISABLED_OPACITY : 1,
       }}
     >
       <View

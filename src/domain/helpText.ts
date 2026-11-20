@@ -15,7 +15,7 @@ export const helpText = {
   },
   abandoned: { title: 'Abandoned', text: 'Inbound callers who hung up before an agent answered.' },
 
-  campaign: { title: 'Campaign', text: 'The campaign this call belongs to. Its disposition list and script are used in wrap-up.' },
+  campaign: { title: 'Campaign', text: 'The campaign this call belongs to. Its disposition list is used in wrap-up.' },
   list: { title: 'List', text: 'The lead list inside the campaign that this number came from.' },
   callType: {
     title: 'Call type',

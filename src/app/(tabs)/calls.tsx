@@ -10,7 +10,7 @@ import { Button, CountBadge, EmptyState, Field, Icon, IconButton, Pill, T, tap }
 import { formatDay, startOfDay } from '@/domain/format';
 import type { CallRecord } from '@/domain/types';
 import { useRefresh } from '@/hooks/useRefresh';
-import { useDial } from '@/hooks/useDial';
+import { useDial, useDialAvailability } from '@/hooks/useDial';
 import { ListPlaceholder } from '@/components/ListPlaceholder';
 import { useCampaigns } from '@/store/campaigns';
 import { useData } from '@/store/data';
@@ -208,6 +208,7 @@ export default function Calls() {
   const contacts = useData((s) => s.contacts);
   const { refreshing, onRefresh } = useRefresh();
   const dial = useDial();
+  const dialBlock = useDialAvailability('history');
   const [q, setQ] = useState('');
   const [date, setDate] = useState<DateSel>({ kind: 'range', label: 'This month', days: 'month' });
   const [filters, setFilters] = useState<Filters>(none);
@@ -276,7 +277,7 @@ export default function Calls() {
               borderRadius: 8,
               borderWidth: 1,
               borderColor: chips.length ? c.purple : c.line,
-              backgroundColor: pressed ? c.subtle : chips.length ? c.selected : c.surface,
+              backgroundColor: pressed ? c.pressed : chips.length ? c.selected : c.surface,
               alignItems: 'center',
               justifyContent: 'center',
             })}
@@ -289,7 +290,14 @@ export default function Calls() {
             )}
           </Pressable>
         </View>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingHorizontal: 16 }}>
+        {/* The padding keeps the Pills' hitSlop inside the ScrollView (Android drops touches outside a parent); the
+            negative margin keeps the visual spacing unchanged */}
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={{ marginVertical: -6 }}
+          contentContainerStyle={{ gap: 8, paddingHorizontal: 16, paddingVertical: 6 }}
+        >
           <Pill label="Today" active={date.kind === 'today'} onPress={() => setDate({ kind: 'today' })} />
           <Pill label="Yesterday" active={date.kind === 'yesterday'} onPress={() => setDate({ kind: 'yesterday' })} />
           <Pill
@@ -304,7 +312,9 @@ export default function Calls() {
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
-              contentContainerStyle={{ gap: 8, paddingHorizontal: 16, alignItems: 'center' }}
+              // 40 tall + hitSlop 4 = 48dp targets; the padding keeps that slop inside the ScrollView
+              style={{ marginVertical: -4 }}
+              contentContainerStyle={{ gap: 8, paddingHorizontal: 16, paddingVertical: 4, alignItems: 'center' }}
             >
               {chips.map((ch) => (
                 <Pressable
@@ -315,18 +325,19 @@ export default function Calls() {
                     tap();
                     setFilters((f) => ({ ...f, [ch.key]: none[ch.key] }));
                   }}
-                  style={{
+                  hitSlop={4}
+                  style={({ pressed }) => ({
                     flexDirection: 'row',
                     alignItems: 'center',
                     gap: 4,
-                    height: 32,
-                    paddingLeft: 12,
-                    paddingRight: 8,
-                    borderRadius: 16,
-                    backgroundColor: c.selected,
+                    height: 40,
+                    paddingLeft: 14,
+                    paddingRight: 10,
+                    borderRadius: 20,
+                    backgroundColor: pressed ? c.lavenderSoft : c.selected,
                     borderWidth: 1,
                     borderColor: c.purple,
-                  }}
+                  })}
                 >
                   <T v="label" color={c.accentInk}>
                     {ch.label}
@@ -336,9 +347,18 @@ export default function Calls() {
               ))}
               <Pressable
                 accessibilityRole="button"
-                onPress={() => setFilters(none)}
-                hitSlop={8}
-                style={{ paddingHorizontal: 6, height: 32, justifyContent: 'center' }}
+                onPress={() => {
+                  tap();
+                  setFilters(none);
+                }}
+                hitSlop={4}
+                style={({ pressed }) => ({
+                  paddingHorizontal: 10,
+                  height: 40,
+                  borderRadius: 8,
+                  justifyContent: 'center',
+                  backgroundColor: pressed ? c.pressed : 'transparent',
+                })}
               >
                 <T v="label" color={c.purple}>
                   Clear all
@@ -369,6 +389,7 @@ export default function Calls() {
           <FadeInItem>
             <CallCard
               call={item}
+              callDimmed={!!dialBlock}
               onCallBack={() => void dial({ number: item.number, contactId: item.contactId, source: 'history' })}
               onLead={() => setLead(item)}
               onPlay={() => (item.hasRecording ? setPlaying(item) : notify('No recording for this call', 'neutral'))}

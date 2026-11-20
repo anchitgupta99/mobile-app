@@ -7,6 +7,8 @@ import { findCampaign } from './campaigns';
 import { pendingIds, useOutbox } from './outbox';
 import { storage } from './storage';
 
+export type ContactsListStatus = 'assigned' | 'none' | 'exhausted';
+
 type DataState = {
   contacts: Contact[];
   calls: CallRecord[];
@@ -18,6 +20,12 @@ type DataState = {
   refreshing: boolean;
   /** Message from the last failed sync; cleared on the next success */
   syncError: string | null;
+  /** Whether the agent has a lead list for the current campaign (backend: GET /leads listStatus) */
+  contactsListStatus: ContactsListStatus;
+  /** Name of the agent's lead list, when the server sends one */
+  contactsListName: string | null;
+  /** Why the last contacts fetch failed (any sync, not just the first); cleared when it next succeeds */
+  contactsError: string | null;
   /** Resolves true when data was refreshed */
   sync: () => Promise<boolean>;
   addCall: (call: CallRecord) => void;
@@ -136,6 +144,9 @@ const empty = {
   dispositions: { campaignId: '', mandatory: true, acwSeconds: 30, dispositions: [] } as DispositionConfig,
   server: { breakTypes: [] } as ServerConfig,
   lastSyncAt: null as string | null,
+  contactsListStatus: 'assigned' as ContactsListStatus,
+  contactsListName: null as string | null,
+  contactsError: null as string | null,
 };
 
 /** The server's ids are UUIDs; anything else saved on the phone is a sample from an older build */
@@ -155,7 +166,7 @@ export const useData = create<DataState>()(
           await useOutbox.getState().flush();
           const since = get().lastSyncAt ?? undefined;
           const [contacts, calls, tasks, dispositions, server] = await Promise.all([
-            api.contacts.list(since),
+            api.contacts.list(since, get().dispositions.campaignId || undefined),
             api.calls.list(),
             api.tasks.list(),
             api.dispositions.config(get().dispositions.campaignId, findCampaign(get().dispositions.campaignId)?.wrapUpSeconds),
@@ -165,7 +176,13 @@ export const useData = create<DataState>()(
           if (gen !== generation) return false;
           const pending = pendingIds(useOutbox.getState().items);
           set((s) => ({
-            contacts: mergeById(s.contacts, contacts.items, pending),
+            // No list, or every lead called: the server's (empty) answer replaces what was cached, so the
+            // Contacts tab can say so instead of showing another campaign's or already-called leads
+            contacts:
+              contacts.listStatus === 'assigned' ? mergeById(s.contacts, contacts.items, pending) : contacts.items,
+            contactsListStatus: contacts.listStatus,
+            contactsListName: contacts.listName ?? null,
+            contactsError: null,
             calls: withServerCalls(s.calls, calls.items, pending).sort(
               (a, b) => b.startedAt.localeCompare(a.startedAt),
             ),
@@ -179,14 +196,14 @@ export const useData = create<DataState>()(
           }));
           return true;
         } catch (e) {
-          set({
-            syncError:
-              e instanceof ApiError && e.code === 'offline'
-                ? 'You are offline'
-                : e instanceof Error
-                  ? e.message
-                  : 'Could not reach the server',
-          });
+          const message =
+            e instanceof ApiError && e.code === 'offline'
+              ? 'You are offline'
+              : e instanceof Error
+                ? e.message
+                : 'Could not reach the server';
+          // The sync is all-or-nothing, so any failure means the contacts weren't refreshed either
+          set({ syncError: message, contactsError: message });
           return false;
         } finally {
           set({ refreshing: false });
@@ -299,7 +316,7 @@ export const useData = create<DataState>()(
     {
       name: 'claritel.data',
       storage,
-      partialize: ({ refreshing, syncError, sync, ...rest }) => rest,
+      partialize: ({ refreshing, syncError, contactsError, sync, ...rest }) => rest,
       // v1: older builds saved the sample break types and dispositions before the server's had loaded;
       // against the backend those are dropped, so a sample break id can never be sent to the server.
       // v2: missed-call reminders made on the phone are dropped; as the web, a missed call only gets a toast.

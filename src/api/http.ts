@@ -1,3 +1,4 @@
+import { demoRequest } from './demo';
 import { ApiError } from './errors';
 
 /**
@@ -6,6 +7,11 @@ import { ApiError } from './errors';
  * it every request fails with "The server address is not set".
  */
 export const API_URL = process.env.EXPO_PUBLIC_API_URL?.trim().replace(/\/+$/, '') || null;
+/**
+ * Demo mode: no server address set, so requests are answered on the phone with sample data (api/demo.ts) and
+ * any login works. Set EXPO_PUBLIC_API_URL to talk to a real backend again.
+ */
+export const DEMO = !API_URL;
 /**
  * The live socket's server. The socket lives at the domain root (/ws) while a deployed API sits under a path
  * (https://domain/backend), so by default it is the API URL's scheme + host + port, like the web's fallback to
@@ -66,6 +72,13 @@ export async function mobileRequest<T>(
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (authToken) headers.Authorization = `Bearer ${authToken}`;
   const sentToken = authToken;
+  if (DEMO) {
+    try {
+      return (await demoRequest(method, path, body)) as T;
+    } catch (e) {
+      throw new ApiError('server', e instanceof Error ? e.message : 'Demo request failed');
+    }
+  }
   if (!API_URL) throw new ApiError('server', 'The server address is not set (EXPO_PUBLIC_API_URL)');
 
   const controller = new AbortController();

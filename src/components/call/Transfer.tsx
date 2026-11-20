@@ -214,7 +214,7 @@ function InternalList({ kind, onPick }: { kind: Consult['kind']; onPick: (c: Col
           placeholderTextColor={c.onCallScreen2}
           accessibilityLabel="Search name or extension"
           autoCorrect={false}
-          style={{ flex: 1, color: c.onCallScreen, fontFamily: font.regular, fontSize: 16, paddingVertical: 12 }}
+          style={{ flex: 1, color: c.onCallScreen, fontFamily: font.regular, fontSize: 15, paddingVertical: 12 }}
         />
       </View>
       <ScrollView contentContainerStyle={{ gap: 4, paddingBottom: 16 }} keyboardShouldPersistTaps="handled">
@@ -324,11 +324,12 @@ function ExternalPad({ onCall }: { onCall: (num: string) => void }) {
           }}
         >
           <T
+            v="title"
             nums
             numberOfLines={1}
             adjustsFontSizeToFit
             color={num ? c.onCallScreen : c.onCallScreen2}
-            style={{ flex: 1, fontSize: 20, lineHeight: 26, fontFamily: font.regular }}
+            style={{ flex: 1, fontFamily: font.regular }}
             accessibilityLiveRegion="polite"
           >
             {num || 'Number'}
@@ -385,10 +386,10 @@ function ExternalPad({ onCall }: { onCall: (num: string) => void }) {
             }}
             pressedStyle={{ backgroundColor: c.callControlActive }}
           >
-            <T style={{ fontSize: 26, lineHeight: 30, fontFamily: font.regular }} color={c.onCallScreen}>
+            <T v="display" style={{ fontFamily: font.regular }} color={c.onCallScreen}>
               {d}
             </T>
-            <T v="overline" color={c.onCallScreen2} style={{ fontSize: 9, lineHeight: 11, minHeight: 11 }}>
+            <T v="overline" color={c.onCallScreen2}>
               {d === '0' ? '+' : sub}
             </T>
           </PressableScale>
