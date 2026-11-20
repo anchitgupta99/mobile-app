@@ -8,9 +8,13 @@ export const spring = {
   gentle: { damping: 29, stiffness: 260, mass: 1 },
 } satisfies Record<string, WithSpringConfig>;
 
+// Custom curves: the built-in cubic is too soft to feel intentional. No ease-in anywhere:
+// it starts slow, so the UI feels late at the exact moment the user is watching.
 export const easing = {
-  enter: Easing.out(Easing.cubic),
-  exit: Easing.in(Easing.cubic),
+  /** Strong ease-out: moves at once, settles gently */
+  enter: Easing.bezier(0.23, 1, 0.32, 1),
+  /** iOS-style drawer curve: quick to leave, no sluggish start */
+  exit: Easing.bezier(0.32, 0.72, 0, 1),
 };
 
 /** Spring to `to`, or a short timed move when Reduce Motion is on. */

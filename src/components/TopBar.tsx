@@ -21,6 +21,7 @@ import { helpText } from '@/domain/helpText';
 import { font, useTheme } from '@/theme';
 import { useStatusLabel, useStatusSheet } from './StatusSheet';
 import { Icon, IconButton, T, tap } from './ui';
+import { Tappable } from './motion/Tappable';
 
 export function useStatusColor() {
   const { c } = useTheme();
@@ -120,7 +121,7 @@ function ConnectivityChip() {
   if (pending === 0) return null;
   const label = syncing ? 'Syncing' : `${pending} to sync`;
   return (
-    <Pressable
+    <Tappable
       accessibilityRole="button"
       accessibilityLabel={`${label}. ${pending} items waiting to sync`}
       accessibilityHint={helpText.syncChip}
@@ -141,7 +142,7 @@ function ConnectivityChip() {
       <T v="caption" color={c.onTopbar} style={{ fontFamily: font.semibold }}>
         {label}
       </T>
-    </Pressable>
+    </Tappable>
   );
 }
 
@@ -158,7 +159,7 @@ function WebphoneChip() {
   const dot = registered ? c.signalOk : status === 'connecting' ? c.signalWarn : status === 'failed' ? c.danger : c.ink3;
   const state = registered ? 'registered' : status === 'connecting' ? 'connecting' : status === 'failed' ? 'registration failed' : 'not connected';
   return (
-    <Pressable
+    <Tappable
       accessibilityRole="button"
       accessibilityLabel={`Webphone ${state}`}
       accessibilityHint="Opens diagnostics"
@@ -183,7 +184,7 @@ function WebphoneChip() {
         Web
       </T>
       {!registered && <Icon name="refresh" size={16} color={c.onTopbar} />}
-    </Pressable>
+    </Tappable>
   );
 }
 

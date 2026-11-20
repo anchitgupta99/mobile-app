@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Pressable, View } from 'react-native';
+import { View } from 'react-native';
 import Animated, { useAnimatedStyle, useReducedMotion, useSharedValue, withSequence, withTiming } from 'react-native-reanimated';
 import { PressableScale } from '@/components/motion/PressableScale';
 import { Icon, T, tap } from '@/components/ui';
@@ -12,6 +12,7 @@ import { useDialAvailability } from '@/hooks/useDial';
 import { useDialpad } from '@/store/dialpad';
 import { font, tone as toneOf, useTheme } from '@/theme';
 import { animateTo } from '@/theme/motion';
+import { Tappable } from '@/components/motion/Tappable';
 
 const keys: [string, string][] = [
   ['1', ''],
@@ -44,7 +45,7 @@ function DialHint({ block }: { block: DialBlock }) {
     const t = toneOf(c, d.tone);
     return (
       <View style={{ alignItems: 'center', paddingTop: 8 }}>
-        <Pressable
+        <Tappable
           accessibilityRole="button"
           accessibilityLabel={`Status: ${block.label}. You can't make calls until you go online. Change status`}
           onPress={() => {
@@ -68,7 +69,7 @@ function DialHint({ block }: { block: DialBlock }) {
             {block.label} · Go online to call
           </T>
           <Icon name="expand-more" size={18} color={c.ink2} />
-        </Pressable>
+        </Tappable>
       </View>
     );
   }
@@ -137,7 +138,9 @@ function Key({
         justifyContent: 'center',
         backgroundColor: c.surface,
         borderWidth: 1,
-        borderColor: c.divider,
+        borderColor: c.line,
+        // Same resting lift as cards, so keys sit above the page rather than blending into it
+        boxShadow: c.cardShadow,
       }}
       pressedStyle={{ backgroundColor: c.lavender }}
     >
@@ -205,7 +208,7 @@ export default function Dialer() {
           </Animated.View>
           <View style={{ width: 48, alignItems: 'center' }}>
             {!!num && (
-              <Pressable
+              <Tappable
                 accessibilityRole="button"
                 accessibilityLabel="Delete digit"
                 onPress={() => {
@@ -220,7 +223,7 @@ export default function Dialer() {
                 style={{ width: 48, height: 48, alignItems: 'center', justifyContent: 'center' }}
               >
                 <Icon name="backspace" size={24} color={c.ink2} />
-              </Pressable>
+              </Tappable>
             )}
           </View>
         </View>

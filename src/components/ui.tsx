@@ -3,7 +3,6 @@ import { forwardRef, type ComponentProps, type ReactNode } from 'react';
 import {
   ActivityIndicator,
   Platform,
-  Pressable,
   Text,
   TextInput,
   View,
@@ -18,6 +17,7 @@ import { playHaptic } from '@/feedback/haptics';
 import { useSettings } from '@/store/settings';
 import { font, minTap, radius, tone as toneOf, useTheme, type Tone } from '@/theme';
 import { PressableScale } from './motion/PressableScale';
+import { Tappable } from './motion/Tappable';
 
 export type IconName = ComponentProps<typeof MaterialIcons>['name'];
 
@@ -115,7 +115,7 @@ export function Button({
   const map: Record<ButtonVariant, { bg: string; fg: string; border?: string; pressed: string }> = {
     primary: { bg: c.primary, fg: c.onPrimary, pressed: c.primaryPressed },
     secondary: { bg: c.lavender, fg: c.onLavender, pressed: c.lavenderSoft },
-    outline: { bg: c.surface, fg: c.ink, border: c.line, pressed: c.pressed },
+    outline: { bg: c.surface, fg: c.ink, border: c.controlBorder, pressed: c.pressed },
     ghost: { bg: 'transparent', fg: c.purple, pressed: c.pressed },
     danger: { bg: c.danger, fg: c.onDanger, pressed: c.dangerPressed },
     call: { bg: c.call, fg: c.onCall, pressed: c.callPressed },
@@ -349,12 +349,13 @@ export function Card({
     borderRadius: radius.card,
     borderWidth: 1,
     borderColor: c.line,
+    boxShadow: c.cardShadow,
     padding: padded ? 16 : 0,
     overflow: 'hidden',
   };
   if (!onPress) return <View style={[base, style]}>{children}</View>;
   return (
-    <Pressable
+    <Tappable
       accessibilityRole="button"
       onPress={() => {
         tap();
@@ -374,7 +375,7 @@ export function Card({
           )}
         </>
       )}
-    </Pressable>
+    </Tappable>
   );
 }
 
@@ -449,7 +450,7 @@ export function SectionHeader({
         )}
       </View>
       {action && (
-        <Pressable
+        <Tappable
           accessibilityRole="button"
           onPress={onAction}
           hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
@@ -465,7 +466,7 @@ export function SectionHeader({
           <T v="label" color={c.purple}>
             {action}
           </T>
-        </Pressable>
+        </Tappable>
       )}
     </View>
   );
@@ -530,7 +531,7 @@ export const Field = forwardRef<
           minHeight: 52,
           borderRadius: 8,
           borderWidth: 1,
-          borderColor: error ? c.errorFg : c.line,
+          borderColor: error ? c.errorFg : c.controlBorder,
           backgroundColor: c.surface,
           flexDirection: 'row',
           alignItems: rest.multiline ? 'flex-start' : 'center',
@@ -587,7 +588,7 @@ export function Segmented<V extends string>({
       {options.map((o) => {
         const on = o.value === value;
         return (
-          <Pressable
+          <Tappable
             key={o.value}
             accessibilityRole="radio"
             accessibilityState={{ checked: on }}
@@ -605,15 +606,14 @@ export function Segmented<V extends string>({
               gap: 6,
               backgroundColor: on ? c.surface : pressed ? c.pressed : 'transparent',
               borderWidth: on ? 1 : 0,
-              borderColor: c.line,
-              opacity: on && pressed ? 0.85 : 1,
+              borderColor: c.controlBorder,
             })}
           >
             {o.icon && <Icon name={o.icon} size={16} color={on ? c.accentInk : c.ink2} />}
             <T v="label" color={on ? c.inkStrong : c.ink2}>
               {o.label}
             </T>
-          </Pressable>
+          </Tappable>
         );
       })}
     </View>
@@ -642,7 +642,7 @@ export function Row({
   const { c } = useTheme();
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: c.surface, paddingRight: right ? 12 : 0 }}>
-      <Pressable
+      <Tappable scaleTo={1}
         accessibilityRole={onPress ? 'button' : undefined}
         accessibilityLabel={accessibilityLabel}
         disabled={!onPress && !onLongPress}
@@ -677,7 +677,7 @@ export function Row({
             subtitle
           )}
         </View>
-      </Pressable>
+      </Tappable>
       {right}
     </View>
   );
@@ -700,7 +700,7 @@ export function Toggle({
   const { c } = useTheme();
   const on = activeColor ?? c.purple;
   return (
-    <Pressable
+    <Tappable
       accessibilityRole="switch"
       accessibilityLabel={label}
       accessibilityState={{ checked: value, disabled: !!disabled }}
@@ -717,7 +717,7 @@ export function Toggle({
         padding: 3,
         backgroundColor: value ? on : c.mutedFill,
         borderWidth: 1,
-        borderColor: value ? on : c.line,
+        borderColor: value ? on : c.controlBorder,
         justifyContent: 'center',
         opacity: disabled ? DISABLED_OPACITY : 1,
       }}
@@ -736,6 +736,6 @@ export function Toggle({
           elevation: 1,
         }}
       />
-    </Pressable>
+    </Tappable>
   );
 }

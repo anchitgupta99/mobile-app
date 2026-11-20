@@ -1,4 +1,4 @@
-import { ActivityIndicator, Pressable, View } from 'react-native';
+import { ActivityIndicator, View } from 'react-native';
 import { create } from 'zustand';
 import { STATUS_DISPLAY, statusLabel } from '@/domain/agentStatus';
 import type { AgentStatus, BreakType } from '@/domain/types';
@@ -7,6 +7,7 @@ import { useSession } from '@/store/session';
 import { tone as toneOf, useTheme, type Tone } from '@/theme';
 import { Sheet } from './Sheet';
 import { Button, Icon, SectionHeader, T, tap, type IconName } from './ui';
+import { Tappable } from './motion/Tappable';
 
 type SheetState = { open: boolean; breakOnly: boolean; show: (breakOnly?: boolean) => void; hide: () => void };
 
@@ -59,7 +60,7 @@ function Option({
   const { c } = useTheme();
   const t = toneOf(c, iconTone);
   return (
-    <Pressable
+    <Tappable scaleTo={1}
       accessibilityRole="radio"
       accessibilityState={{ checked: on }}
       accessibilityLabel={body ? `${title}, ${body}` : title}
@@ -75,8 +76,8 @@ function Option({
         paddingHorizontal: 14,
         borderRadius: 12,
         borderWidth: 1,
-        borderColor: on ? c.purple : c.line,
-        backgroundColor: on ? c.selected : pressed ? c.subtle : c.surface,
+        borderColor: on ? c.purple : c.controlBorder,
+        backgroundColor: pressed ? c.pressed : on ? c.selected : c.surface,
       })}
     >
       <View style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: t.bg, alignItems: 'center', justifyContent: 'center' }}>
@@ -87,7 +88,7 @@ function Option({
         {body && <T v="caption">{body}</T>}
       </View>
       {on && <Icon name="check" color={c.purple} />}
-    </Pressable>
+    </Tappable>
   );
 }
 

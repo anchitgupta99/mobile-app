@@ -17,6 +17,8 @@ export type Palette = {
   inkStrong: string;
 
   line: string;
+  /** Edge of an interactive control (input, outline button, chip, switch): at least 3:1 against surface */
+  controlBorder: string;
   divider: string;
 
   navy: string;
@@ -74,19 +76,27 @@ export type Palette = {
   onCallScreen: string;
   onCallScreen2: string;
   callControl: string;
+  /** Edge of an in-call button, so it separates from the call screen */
+  callControlBorder: string;
+  /** Pressed fill for an inactive in-call button */
+  callControlPressed: string;
   callControlActive: string;
   onCallControlActive: string;
 
   shadow: string;
+  /** Resting lift for cards (a boxShadow string). Dark mode lifts with a lighter surface instead. */
+  cardShadow: string;
+  /** Fill behind the selected tab icon: clearly stronger than the page */
+  tabSelected: string;
 };
 
 export const light: Palette = {
-  shell: '#E6E6FF',
-  page: '#F0EFFB',
+  shell: '#F4F4F7',
+  page: '#F4F4F7',
   surface: '#FFFFFF',
   subtle: '#F9F9FB',
   mutedFill: '#F7F7F8',
-  pressed: 'rgba(0,0,0,0.05)',
+  pressed: 'rgba(27,27,60,0.12)',
   selected: '#F0EFFB',
   overlay: 'rgba(12,13,13,0.5)',
   invert: '#27292B',
@@ -94,11 +104,12 @@ export const light: Palette = {
 
   ink: '#333333',
   ink2: '#666666',
-  ink3: '#999999',
-  inkPlaceholder: '#AAAAAA',
+  ink3: '#686874',
+  inkPlaceholder: '#6B6B76',
   inkStrong: '#181A1B',
 
   line: '#E2E2E4',
+  controlBorder: '#82819A',
   divider: '#ECECF0',
 
   navy: '#1B1B3C',
@@ -118,8 +129,8 @@ export const light: Palette = {
   danger: '#DC3545',
   dangerPressed: '#C62F3E',
   onDanger: '#FFFFFF',
-  call: '#2D874E',
-  callPressed: '#287946',
+  call: '#277A46',
+  callPressed: '#22693C',
   onCall: '#FFFFFF',
 
   topbar: '#B4B4EC',
@@ -137,7 +148,7 @@ export const light: Palette = {
   errorFg: '#C82333',
   errorLine: '#F8D7DA',
   warningBg: '#FFF6EC',
-  warningFg: '#A86207',
+  warningFg: '#8F5300',
   warningLine: '#FBE3C4',
   infoBg: '#EEF4FF',
   infoFg: '#2557D6',
@@ -146,7 +157,7 @@ export const light: Palette = {
   purpleFg: '#57329A',
   purpleLine: '#E1D8F5',
   neutralBg: '#F8F9FA',
-  neutralFg: '#6C757D',
+  neutralFg: '#5C636A',
   neutralLine: '#E2E3E5',
 
   callScreen: '#E6E6FF',
@@ -154,16 +165,20 @@ export const light: Palette = {
   onCallScreen: '#1B1B3C',
   onCallScreen2: '#5C5C7A',
   callControl: '#FFFFFF',
+  callControlBorder: '#7E7D96',
+  callControlPressed: '#CCCAE8',
   callControlActive: '#534B82',
   onCallControlActive: '#FFFFFF',
 
   shadow: 'rgba(27,27,60,0.18)',
+  cardShadow: '0px 1px 2px 0px rgba(27,27,60,0.06), 0px 4px 12px 0px rgba(27,27,60,0.06)',
+  tabSelected: '#D6D5F5',
 };
 
 export const dark: Palette = {
   shell: '#0C0D0D',
   page: '#0C0D0D',
-  surface: '#181A1B',
+  surface: '#1E2022',
   subtle: '#27292B',
   mutedFill: '#3D4143',
   pressed: 'rgba(255,255,255,0.12)',
@@ -175,16 +190,17 @@ export const dark: Palette = {
   ink: '#F2F2F3',
   ink2: '#AFB3B6',
   ink3: 'rgba(175,179,182,0.75)',
-  inkPlaceholder: 'rgba(255,255,255,0.3)',
+  inkPlaceholder: 'rgba(255,255,255,0.5)',
   inkStrong: '#F2F2F3',
 
   line: 'rgba(255,255,255,0.15)',
+  controlBorder: 'rgba(255,255,255,0.38)',
   divider: 'rgba(255,255,255,0.15)',
 
   navy: '#7168A5',
-  primary: '#7168A5',
-  primaryPressed: '#857DBA',
-  onPrimary: '#F2F0FF',
+  primary: '#5E5596',
+  primaryPressed: '#6B62A6',
+  onPrimary: '#FFFFFF',
   purple: '#ADA5E1',
   onPurple: '#121024',
   lavender: '#C6C6FC',
@@ -214,7 +230,7 @@ export const dark: Palette = {
   successFg: '#80D997',
   successLine: '#2D874E',
   errorBg: 'rgba(255,135,122,0.2)',
-  errorFg: '#FF6157',
+  errorFg: '#FF8A80',
   errorLine: '#BA1A1A',
   warningBg: 'rgba(255,211,98,0.15)',
   warningFg: '#FFE5A3',
@@ -233,11 +249,15 @@ export const dark: Palette = {
   callScreen2: '#181A1B',
   onCallScreen: '#F2F2F3',
   onCallScreen2: '#AFB3B6',
-  callControl: 'rgba(255,255,255,0.1)',
+  callControl: 'rgba(255,255,255,0.16)',
+  callControlBorder: 'rgba(255,255,255,0.38)',
+  callControlPressed: 'rgba(255,255,255,0.28)',
   callControlActive: '#ADA5E1',
   onCallControlActive: '#121024',
 
   shadow: 'rgba(0,0,0,0.5)',
+  cardShadow: '0px 0px 0px 0px transparent',
+  tabSelected: 'rgba(161,161,236,0.32)',
 };
 
 export const outdoor: Palette = {
@@ -250,6 +270,7 @@ export const outdoor: Palette = {
   inkPlaceholder: '#5C5C5C',
   inkStrong: '#000000',
   line: '#000000',
+  controlBorder: '#000000',
   divider: '#5C5C5C',
   topbar: '#1B1B3C',
   onTopbar: '#FFFFFF',

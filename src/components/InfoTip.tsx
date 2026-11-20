@@ -4,6 +4,7 @@ import Animated, { FadeIn } from 'react-native-reanimated';
 import { minTap, useTheme } from '@/theme';
 import { duration } from '@/theme/motion';
 import { Icon, T, tap } from './ui';
+import { Tappable } from './motion/Tappable';
 
 const WIDTH = 280;
 const GAP = 8;
@@ -44,7 +45,7 @@ export function InfoTip({
 
   return (
     <>
-      <Pressable
+      <Tappable
         ref={ref}
         accessibilityRole="button"
         accessibilityLabel={title ? `About ${title}` : 'More info'}
@@ -52,10 +53,10 @@ export function InfoTip({
         onPress={open}
         // The bare icon gets a 48dp target; a wrapped child is usually larger already
         hitSlop={children ? 12 : Math.max(12, (minTap - size) / 2)}
-        style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1, justifyContent: 'center' })}
+        style={({ pressed }) => ({ justifyContent: 'center', borderRadius: 12, backgroundColor: pressed ? c.pressed : 'transparent' })}
       >
         {children ?? <Icon name="info-outline" size={size} color={color ?? c.ink3} />}
-      </Pressable>
+      </Tappable>
       <Modal visible={!!anchor} transparent animationType="none" onRequestClose={close} statusBarTranslucent navigationBarTranslucent>
         <Pressable accessibilityRole="button" accessibilityLabel="Close" onPress={close} style={{ flex: 1 }}>
           {anchor && (

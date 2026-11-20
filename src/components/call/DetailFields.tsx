@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { ActivityIndicator, Pressable, View } from 'react-native';
+import { ActivityIndicator, View } from 'react-native';
 import { detailError, isCaptured, type DetailEntry } from '@/domain/details';
 import type { CaptureField } from '@/domain/types';
 import { useDetails } from '@/store/details';
 import { useTheme } from '@/theme';
 import { Field, Icon, Pill, StatusChip, T, tap } from '../ui';
+import { Tappable } from '@/components/motion/Tappable';
 
 const keyboardFor = (f: CaptureField) =>
   f.type === 'email' ? ('email-address' as const) : f.type === 'phone' ? ('phone-pad' as const) : ('default' as const);
@@ -33,12 +34,12 @@ function SaveState({ entry, onRetry }: { entry: DetailEntry; onRetry: () => void
   }
   if (entry.save === 'failed') {
     return (
-      <Pressable accessibilityRole="button" hitSlop={12} onPress={onRetry} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+      <Tappable accessibilityRole="button" hitSlop={12} onPress={onRetry} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
         <Icon name="sync-problem" size={16} color={c.errorFg} />
         <T v="caption" color={c.errorFg}>
           Not saved · Retry
         </T>
-      </Pressable>
+      </Tappable>
     );
   }
   return null;
@@ -47,7 +48,7 @@ function SaveState({ entry, onRetry }: { entry: DetailEntry; onRetry: () => void
 function TextButton({ label, onPress, icon }: { label: string; onPress: () => void; icon?: 'check' | 'edit' | 'undo' | 'block' }) {
   const { c } = useTheme();
   return (
-    <Pressable
+    <Tappable scaleTo={1}
       accessibilityRole="button"
       hitSlop={6}
       onPress={() => {
@@ -68,7 +69,7 @@ function TextButton({ label, onPress, icon }: { label: string; onPress: () => vo
       <T v="label" color={c.purple}>
         {label}
       </T>
-    </Pressable>
+    </Tappable>
   );
 }
 

@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import { Platform, Pressable, View } from 'react-native';
+import { Platform, View } from 'react-native';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { formatRelative } from '@/domain/format';
 import { useNow } from '@/hooks/useNow';
@@ -9,6 +9,7 @@ import { useOutbox } from '@/store/outbox';
 import { useTheme } from '@/theme';
 import { duration } from '@/theme/motion';
 import { Icon, T, type IconName } from './ui';
+import { Tappable } from './motion/Tappable';
 
 /** Data older than this gets a "last updated" warning */
 const STALE_MS = 30 * 60000;
@@ -41,16 +42,16 @@ function Banner({ tone, icon, text, action, onAction }: { tone: Tone; icon: Icon
       <T v="caption" color={fg} style={{ flex: 1, paddingVertical: 8 }}>
         {text}
       </T>
-      <Pressable
+      <Tappable
         accessibilityRole="button"
         onPress={onAction}
         hitSlop={8}
-        style={({ pressed }) => ({ minHeight: 36, paddingHorizontal: 10, justifyContent: 'center', borderRadius: 8, opacity: pressed ? 0.6 : 1 })}
+        style={({ pressed }) => ({ minHeight: 36, paddingHorizontal: 10, justifyContent: 'center', borderRadius: 8, backgroundColor: pressed ? c.pressed : 'transparent' })}
       >
         <T v="label" color={fg}>
           {action}
         </T>
-      </Pressable>
+      </Tappable>
     </Animated.View>
   );
 }

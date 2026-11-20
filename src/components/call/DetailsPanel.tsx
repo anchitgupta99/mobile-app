@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Pressable, ScrollView, View, type StyleProp, type ViewStyle } from 'react-native';
+import { ScrollView, View, type StyleProp, type ViewStyle } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, { FadeInUp, runOnJS, useAnimatedStyle, useReducedMotion, useSharedValue } from 'react-native-reanimated';
 import { keyboardBehavior } from '@/components/keyboard';
@@ -10,6 +10,7 @@ import { useTheme } from '@/theme';
 import { animateTo } from '@/theme/motion';
 import { Icon, T, tap } from '../ui';
 import { DetailFields } from './DetailFields';
+import { Tappable } from '@/components/motion/Tappable';
 
 /** Height of the collapsed bar; the call screen keeps this much room for it */
 export const DETAILS_BAR_H = 56;
@@ -89,7 +90,7 @@ export function DetailsPanel({ callId, maxHeight, style }: { callId: string; max
       ]}
     >
       <GestureDetector gesture={drag}>
-        <Pressable
+        <Tappable scaleTo={1}
           accessibilityRole="button"
           accessibilityLabel={summary}
           accessibilityHint={open ? 'Hides the details' : 'Shows the details to fill in'}
@@ -128,7 +129,7 @@ export function DetailsPanel({ callId, maxHeight, style }: { callId: string; max
             <View style={{ width: 28, height: 4, borderRadius: 2, backgroundColor: c.line }} />
             <Icon name={open ? 'expand-less' : 'expand-more'} size={20} color={c.ink2} />
           </View>
-        </Pressable>
+        </Tappable>
       </GestureDetector>
       <ScrollView
         keyboardShouldPersistTaps="handled"
